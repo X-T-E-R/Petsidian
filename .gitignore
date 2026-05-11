@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+*.log
+.DS_Store
+
+# Local Obsidian runtime data
+data.json
+
+# Trellis/Codex workflow state is local-only for this project.
+.trellis/
+.agents/
+.codex/

@@ -1,0 +1,27 @@
+{
+  "name": "petsidian",
+  "version": "0.1.0",
+  "description": "A desktop-only detached pet companion plugin for Obsidian.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "pet",
+    "companion"
+  ],
+  "author": "X-T-E-R",
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "builtin-modules": "^5.0.0",
+    "esbuild": "^0.28.0",
+    "obsidian": "^1.12.3",
+    "typescript": "^5.9.3"
+  }
+}

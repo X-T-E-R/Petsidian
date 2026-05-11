@@ -1,0 +1,4 @@
+.petsidian-settings p {
+  color: var(--text-muted);
+  max-width: 56rem;
+}

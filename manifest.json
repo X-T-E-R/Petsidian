@@ -1,0 +1,10 @@
+{
+  "id": "petsidian",
+  "name": "Petsidian",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "A desktop-only detached pet companion hosted by Obsidian.",
+  "author": "X-T-E-R",
+  "authorUrl": "https://github.com/X-T-E-R",
+  "isDesktopOnly": true
+}
