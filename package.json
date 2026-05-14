@@ -2,12 +2,17 @@
   "name": "petsidian",
   "version": "0.1.0",
   "description": "A desktop-only detached pet companion plugin for Obsidian.",
-  "main": "main.js",
+  "main": "dist/main.js",
   "type": "module",
   "scripts": {
-    "dev": "node esbuild.config.mjs",
-    "build": "tsc --noEmit && node esbuild.config.mjs production",
-    "typecheck": "tsc --noEmit"
+    "dev": "node esbuild.config.mjs --watch",
+    "build": "pnpm typecheck && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit",
+    "link:test-vault": "node scripts/link-test-vault.mjs",
+    "enable:test-vault-plugin": "node scripts/enable-test-vault-plugin.mjs",
+    "prepare:test-vault": "node scripts/prepare-test-vault.mjs",
+    "smoke:obsidian": "node scripts/obsidian-smoke.mjs",
+    "smoke:obsidian:attached": "node scripts/obsidian-attached-smoke.mjs"
   },
   "keywords": [
     "obsidian",

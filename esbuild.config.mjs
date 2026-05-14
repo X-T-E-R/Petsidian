@@ -1,8 +1,45 @@
 import esbuild from "esbuild";
 import builtins from "builtin-modules";
+import { access, copyFile, mkdir } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const production = process.argv[2] === "production";
+const args = new Set(process.argv.slice(2));
+const production = args.has("production");
 const watch = process.argv.includes("--watch");
+const rootDir = dirname(fileURLToPath(import.meta.url));
+const distDir = resolve(rootDir, "dist");
+const staticArtifacts = ["manifest.json", "styles.css", "versions.json"];
+
+async function copyStaticArtifacts() {
+  await mkdir(distDir, { recursive: true });
+
+  await Promise.all(
+    staticArtifacts.map(async (fileName) => {
+      const sourcePath = resolve(rootDir, fileName);
+      try {
+        await access(sourcePath);
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+          return;
+        }
+        throw error;
+      }
+
+      await copyFile(sourcePath, resolve(distDir, fileName));
+    })
+  );
+}
+
+const copyStaticArtifactsPlugin = {
+  name: "copy-static-artifacts",
+  setup(build) {
+    build.onEnd(async (result) => {
+      if (result.errors.length > 0) return;
+      await copyStaticArtifacts();
+    });
+  }
+};
 
 const external = [
   "obsidian",
@@ -33,14 +70,15 @@ const context = await esbuild.context({
   target: "es2018",
   logLevel: "info",
   minify: production,
+  plugins: [copyStaticArtifactsPlugin],
   sourcemap: production ? false : "inline",
   treeShaking: true,
-  outfile: "main.js"
+  outfile: resolve(distDir, "main.js")
 });
 
 if (watch) {
   await context.watch();
-  console.log("Watching for changes...");
+  console.log("Watching for changes in dist/...");
 } else {
   await context.rebuild();
   await context.dispose();
