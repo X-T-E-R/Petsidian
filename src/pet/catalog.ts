@@ -11,7 +11,34 @@ export type PetCatalogItem = {
   imported: boolean;
 };
 
+export type ImportedPetRecord = {
+  id: string;
+  displayName: string;
+  description: string;
+  spritesheetDataUrl: string;
+  sourceName?: string | null;
+  sourceUrl?: string | null;
+};
+
 export type PetId = string;
+
+export function isPetId(
+  value: string,
+  catalog: readonly PetCatalogItem[] = PET_CATALOG
+): value is PetId {
+  return catalog.some((pet) => pet.id === value);
+}
+
+export function getCombinedPetCatalog(
+  importedPets: readonly ImportedPetRecord[]
+): readonly PetCatalogItem[] {
+  if (importedPets.length === 0) return PET_CATALOG;
+  const importedIds = new Set(importedPets.map((pet) => pet.id));
+  return [
+    ...PET_CATALOG.filter((pet) => !importedIds.has(pet.id)),
+    ...importedPets.map(createImportedCatalogItem)
+  ];
+}
 
 function petFillForRow(row: number): string {
   const fills = [
@@ -80,6 +107,19 @@ export const PET_CATALOG = [
     imported: false
   }
 ] as const satisfies readonly PetCatalogItem[];
+
+export function createImportedCatalogItem(pet: ImportedPetRecord): PetCatalogItem {
+  return {
+    id: pet.id,
+    displayName: pet.displayName,
+    description: pet.description,
+    spritesheetPath: "imported-data-url.webp",
+    spritesheetUrl: pet.spritesheetDataUrl,
+    sourceName: pet.sourceName ?? null,
+    sourceUrl: pet.sourceUrl ?? null,
+    imported: true
+  };
+}
 
 export function getCatalogPet(
   id: PetId,

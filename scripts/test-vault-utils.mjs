@@ -279,6 +279,13 @@ using System.Text;
 using System.Runtime.InteropServices;
 public static class PetsidianWindowProbe {
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+  }
   [DllImport("user32.dll")]
   public static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
   [DllImport("user32.dll")]
@@ -289,6 +296,8 @@ public static class PetsidianWindowProbe {
   public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")]
   public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")]
+  public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
 }
 "@;
 $targetPid = ${processId};
@@ -301,10 +310,20 @@ $windows = New-Object System.Collections.Generic.List[object];
     $length = [PetsidianWindowProbe]::GetWindowTextLength($hWnd)
     $builder = New-Object System.Text.StringBuilder ($length + 1)
     [void][PetsidianWindowProbe]::GetWindowText($hWnd, $builder, $builder.Capacity)
+    $rect = New-Object PetsidianWindowProbe+RECT
+    [void][PetsidianWindowProbe]::GetWindowRect($hWnd, [ref]$rect)
     $windows.Add([pscustomobject]@{
       handle = $hWnd.ToInt64()
       title = $builder.ToString()
       visible = [PetsidianWindowProbe]::IsWindowVisible($hWnd)
+      rect = [pscustomobject]@{
+        left = $rect.Left
+        top = $rect.Top
+        right = $rect.Right
+        bottom = $rect.Bottom
+        width = $rect.Right - $rect.Left
+        height = $rect.Bottom - $rect.Top
+      }
     }) | Out-Null
   }
   return $true
@@ -329,6 +348,96 @@ public static class PetsidianCloseWindow {
 }
 "@;
 [void][PetsidianCloseWindow]::PostMessage([IntPtr]${windowHandle}, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+`;
+  runPowerShell(command);
+}
+
+export function rightClickWindowHandle(windowHandle) {
+  const command = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public struct PetsidianMouseRect {
+  public int Left;
+  public int Top;
+  public int Right;
+  public int Bottom;
+}
+public static class PetsidianMouseInput {
+  [DllImport("user32.dll")]
+  public static extern bool GetWindowRect(IntPtr hWnd, out PetsidianMouseRect rect);
+  [DllImport("user32.dll")]
+  public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")]
+  public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")]
+  public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+}
+"@;
+$handle = [IntPtr]${windowHandle}
+$rect = New-Object PetsidianMouseRect
+[void][PetsidianMouseInput]::GetWindowRect($handle, [ref]$rect)
+$width = [Math]::Max(1, $rect.Right - $rect.Left)
+$height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+$x = [int]($rect.Left + ($width / 2))
+$y = [int]($rect.Bottom - [Math]::Min(88, [Math]::Max(28, $height / 3)))
+[void][PetsidianMouseInput]::SetForegroundWindow($handle)
+Start-Sleep -Milliseconds 150
+[void][PetsidianMouseInput]::SetCursorPos($x, $y)
+Start-Sleep -Milliseconds 80
+[PetsidianMouseInput]::mouse_event(0x0008, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 80
+[PetsidianMouseInput]::mouse_event(0x0010, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 250
+`;
+  runPowerShell(command);
+}
+
+export function dragWindowHandle(windowHandle, deltaX = -80, deltaY = -36) {
+  const command = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public struct PetsidianDragRect {
+  public int Left;
+  public int Top;
+  public int Right;
+  public int Bottom;
+}
+public static class PetsidianDragInput {
+  [DllImport("user32.dll")]
+  public static extern bool GetWindowRect(IntPtr hWnd, out PetsidianDragRect rect);
+  [DllImport("user32.dll")]
+  public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")]
+  public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")]
+  public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+}
+"@;
+$handle = [IntPtr]${windowHandle}
+$rect = New-Object PetsidianDragRect
+[void][PetsidianDragInput]::GetWindowRect($handle, [ref]$rect)
+$width = [Math]::Max(1, $rect.Right - $rect.Left)
+$height = [Math]::Max(1, $rect.Bottom - $rect.Top)
+$startX = [int]($rect.Left + ($width / 2))
+$startY = [int]($rect.Bottom - [Math]::Min(88, [Math]::Max(28, $height / 3)))
+$endX = [int]($startX + ${deltaX})
+$endY = [int]($startY + ${deltaY})
+[void][PetsidianDragInput]::SetForegroundWindow($handle)
+Start-Sleep -Milliseconds 150
+[void][PetsidianDragInput]::SetCursorPos($startX, $startY)
+Start-Sleep -Milliseconds 80
+[PetsidianDragInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 80
+for ($i = 1; $i -le 12; $i += 1) {
+  $x = [int]($startX + (($endX - $startX) * $i / 12))
+  $y = [int]($startY + (($endY - $startY) * $i / 12))
+  [void][PetsidianDragInput]::SetCursorPos($x, $y)
+  Start-Sleep -Milliseconds 24
+}
+[PetsidianDragInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 350
 `;
   runPowerShell(command);
 }
@@ -358,6 +467,17 @@ export function sendCtrlRToWindow(windowHandle) {
 Add-Type -AssemblyName System.Windows.Forms
 Start-Sleep -Milliseconds 350
 [System.Windows.Forms.SendKeys]::SendWait("^r")
+`;
+  runPowerShell(command);
+}
+
+export function sendEscapeToWindow(windowHandle) {
+  focusWindowHandle(windowHandle);
+  const command = `
+Add-Type -AssemblyName System.Windows.Forms
+Start-Sleep -Milliseconds 250
+[System.Windows.Forms.SendKeys]::SendWait("{ESC}")
+Start-Sleep -Milliseconds 250
 `;
   runPowerShell(command);
 }
@@ -428,6 +548,70 @@ export async function waitForWindows(processId, timeoutMs = 45000) {
       lastWindows.find(
         (windowInfo) => typeof windowInfo.title === "string" && windowInfo.title === petWindowTitle
       ) ?? null,
+    elapsedMs: Date.now() - startedAt
+  };
+}
+
+export async function waitForPetWindowTitle(processId, expectedTitle, timeoutMs = 5000) {
+  const startedAt = Date.now();
+  let lastWindows = [];
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    lastWindows = getWindowsForProcess(processId);
+    const petWindow = lastWindows.find(
+      (windowInfo) => typeof windowInfo.title === "string" && windowInfo.title === expectedTitle
+    );
+    if (petWindow) {
+      return {
+        success: true,
+        petWindow,
+        windows: lastWindows,
+        elapsedMs: Date.now() - startedAt
+      };
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  }
+
+  return {
+    success: false,
+    petWindow: null,
+    windows: lastWindows,
+    elapsedMs: Date.now() - startedAt
+  };
+}
+
+export async function waitForPetWindowMove(processId, originalRect, timeoutMs = 5000) {
+  const startedAt = Date.now();
+  let lastWindows = [];
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    lastWindows = getWindowsForProcess(processId);
+    const petWindow = lastWindows.find(
+      (windowInfo) => typeof windowInfo.title === "string" && windowInfo.title.startsWith(petWindowTitle)
+    );
+    const rect = petWindow?.rect;
+    if (
+      rect &&
+      (Math.abs(rect.left - originalRect.left) >= 10 || Math.abs(rect.top - originalRect.top) >= 10)
+    ) {
+      return {
+        success: true,
+        petWindow,
+        originalRect,
+        movedRect: rect,
+        windows: lastWindows,
+        elapsedMs: Date.now() - startedAt
+      };
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  }
+
+  return {
+    success: false,
+    petWindow: null,
+    originalRect,
+    movedRect: null,
+    windows: lastWindows,
     elapsedMs: Date.now() - startedAt
   };
 }
@@ -525,6 +709,10 @@ export function launchObsidianForVault(options = {}) {
 }
 
 export function stopProcessTree(processId) {
+  if (getProcessInfo(processId) === null) {
+    return;
+  }
+
   const result = spawnSync(
     "taskkill",
     ["/PID", String(processId), "/T", "/F"],
@@ -535,6 +723,9 @@ export function stopProcessTree(processId) {
   );
 
   if (result.status !== 0) {
+    if (getProcessInfo(processId) === null) {
+      return;
+    }
     const details = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
     if (details && !details.toLowerCase().includes("not found")) {
       throw new Error(details);

@@ -29,6 +29,14 @@ export const PET_ACTION_ANIMATION_IDS = [
 
 export type PetActionAnimationId = (typeof PET_ACTION_ANIMATION_IDS)[number];
 
+export const PET_IDLE_SELF_PLAY_ANIMATION_IDS = [
+  "waving",
+  "jumping",
+  "waiting",
+  "running",
+  "review"
+] as const satisfies readonly PetActionAnimationId[];
+
 export const PET_ACTION_LABELS = {
   waving: "Wave",
   jumping: "Jump",

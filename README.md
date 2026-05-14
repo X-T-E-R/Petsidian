@@ -6,25 +6,39 @@ Petsidian is a desktop-only Obsidian plugin that hosts a detached desktop pet. O
 
 - A detached transparent desktop pet window for Obsidian desktop.
 - A strict TypeScript Obsidian plugin bundled with esbuild.
-- A small MVP that adapts OpenPet's portable animation atlas, action ids, companion event types, bubbles, and settings concepts.
+- An Obsidian-hosted adaptation of OpenPet's portable animation atlas, action ids, companion event types, import flow, bubbles, movement, and pet interaction concepts.
 
 ## What It Is Not
 
 Petsidian is not a mobile or browser plugin. It depends on Obsidian desktop's Electron/Node runtime and sets `isDesktopOnly` to `true`.
 
-Petsidian does not provide full OpenPet/Tauri parity. In particular, the MVP does not include a tray menu, a localhost HTTP API, an MCP bridge, or verified desktop click-through behavior.
+Petsidian does not embed OpenPet's Tauri shell. It does not include a system tray menu, a localhost HTTP API, an MCP bridge, or Tauri's OS-level cursor pass-through controls. The detached window uses Electron APIs exposed by Obsidian desktop.
 
 ## Features
 
 - Toggleable detached pet window created with Electron `BrowserWindow`.
 - Transparent frameless desktop window with always-on-top and skip-taskbar settings.
 - Generated bundled `nia` atlas fallback with the OpenPet atlas geometry.
+- Pet import from a local package directory, `pet.json`, or `.webp` spritesheet.
+- Website pet import for Petdex, Codex Pets, and compatible HTTPS pages that expose a `spritesheet.webp`.
+- Imported-pet catalog selection and removal from the settings tab.
 - Click action with fixed or random action selection.
-- Speech bubbles with configurable duration.
-- Optional autonomous desktop walking within the primary display work area.
+- Speech bubbles with configurable duration, style, font, and max width.
+- Optional autonomous desktop walking, hover pause, idle self-play, and drag-to-position within the primary display work area.
+- Pet right-click menu for settings, wave, roaming toggle, and hiding the pet.
 - Commands for show, hide, toggle, wave, sample speech, direct actions, and companion events.
 - Settings tab using Obsidian `PluginSettingTab` and `loadData()` / `saveData()`.
 - Scoped CSS classes prefixed with `petsidian-`.
+
+## Imported Pets
+
+Imported pets use the OpenPet atlas contract: a WebP spritesheet compatible with the bundled animation rows and a `pet.json` manifest when importing a package. For this plugin pass, imported spritesheets are stored in Obsidian plugin settings as WebP data URLs together with display metadata. This keeps release artifacts simple, but very large imports can make the plugin data file larger.
+
+Website import accepts HTTPS pages only and blocks localhost/private-address URLs. Supported source shapes include:
+
+- Petdex detail pages such as `https://petdex.crafter.run/pets/boba`
+- Codex Pets share/detail URLs
+- Generic pages whose metadata or HTML exposes a likely `spritesheet.webp`
 
 ## Build
 

@@ -5,154 +5,65 @@ import {
   PET_ATLAS,
   type PetActionAnimationId
 } from "./pet/animation";
-import { getCatalogPet, getPetSpritesheetUrl, PET_CATALOG } from "./pet/catalog";
+import { getCatalogPet, type PetCatalogItem } from "./pet/catalog";
 import type { PetsidianSettings } from "./pet/settings";
+import {
+  resolveElectronRuntime,
+  type BrowserWindowLike,
+  type DesktopRuntime,
+  type ScreenLike,
+  type WorkArea
+} from "./electron-runtime";
 
-type RuntimeRequire = (moduleName: string) => unknown;
+type DesktopPetWindowOptions = {
+  getSettings: () => PetsidianSettings;
+  getCatalog: () => readonly PetCatalogItem[];
+  onOpenSettings: () => void;
+  onUpdateSettings: (partial: Partial<PetsidianSettings>) => Promise<void>;
+};
 
-type BrowserWindowConstructor = new (options: BrowserWindowOptions) => BrowserWindowLike;
-
-type BrowserWindowOptions = {
-  width: number;
-  height: number;
-  x?: number;
-  y?: number;
-  show: boolean;
-  frame: boolean;
-  transparent: boolean;
-  resizable: boolean;
-  movable: boolean;
-  alwaysOnTop: boolean;
-  skipTaskbar: boolean;
-  hasShadow: boolean;
-  backgroundColor: string;
-  title: string;
-  webPreferences: {
-    contextIsolation: boolean;
-    nodeIntegration: boolean;
-    sandbox: boolean;
+type RendererSnapshot = {
+  settings: PetsidianSettings;
+  pet: {
+    displayName: string;
+    spritesheetUrl: string;
   };
 };
 
-type WorkArea = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+type RendererCommand =
+  | { type: "open-settings" }
+  | { type: "wave" }
+  | { type: "toggle-walking" }
+  | { type: "hide-pet" };
+
+type RendererDragState = {
+  active: boolean;
+  startScreenX: number;
+  startScreenY: number;
+  latestScreenX: number;
+  latestScreenY: number;
+  started: boolean;
+  ended: boolean;
 };
 
-type DisplayLike = {
-  workArea: WorkArea;
+type RendererHostState = {
+  commands: RendererCommand[];
+  drag: RendererDragState | null;
+  hovered: boolean;
+  contextMenuOpen: boolean;
 };
 
-type ScreenLike = {
-  getPrimaryDisplay: () => DisplayLike;
-};
-
-type WebContentsLike = {
-  executeJavaScript: (script: string, userGesture?: boolean) => Promise<unknown>;
-};
-
-type BrowserWindowLike = {
-  webContents: WebContentsLike;
-  loadURL: (url: string) => Promise<void> | void;
-  show: () => void;
-  hide: () => void;
-  close: () => void;
-  destroy: () => void;
-  isDestroyed: () => boolean;
-  setAlwaysOnTop: (flag: boolean, level?: string) => void;
-  setSkipTaskbar: (skip: boolean) => void;
-  setSize: (width: number, height: number, animate?: boolean) => void;
-  setPosition: (x: number, y: number, animate?: boolean) => void;
-  getPosition: () => [number, number];
-  getSize: () => [number, number];
-  once: (event: "closed", callback: () => void) => void;
-};
-
-type ElectronRemoteLike = {
-  BrowserWindow: BrowserWindowConstructor;
-  screen?: ScreenLike;
-};
-
-type ElectronModuleLike = {
-  remote?: ElectronRemoteLike;
-  screen?: ScreenLike;
-};
-
-type DesktopRuntime = {
-  BrowserWindow: BrowserWindowConstructor;
-  screen?: ScreenLike;
+type DragSession = {
+  startScreenX: number;
+  startScreenY: number;
+  startWindowX: number;
+  startWindowY: number;
 };
 
 const PET_WINDOW_MARGIN_PX = 24;
 const PET_WINDOW_BUBBLE_SPACE_PX = 96;
 const WALK_INTERVAL_MS = 50;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function isBrowserWindowConstructor(value: unknown): value is BrowserWindowConstructor {
-  return typeof value === "function";
-}
-
-function isScreenLike(value: unknown): value is ScreenLike {
-  if (!isRecord(value)) return false;
-  return typeof value.getPrimaryDisplay === "function";
-}
-
-function readElectronRemote(value: unknown): ElectronRemoteLike | null {
-  if (!isRecord(value) || !isBrowserWindowConstructor(value.BrowserWindow)) return null;
-  const remote: ElectronRemoteLike = {
-    BrowserWindow: value.BrowserWindow
-  };
-  if (isScreenLike(value.screen)) {
-    remote.screen = value.screen;
-  }
-  return remote;
-}
-
-function resolveRuntimeRequire(): RuntimeRequire {
-  const globalWindow = window as Window & { require?: RuntimeRequire };
-  if (typeof globalWindow.require !== "function") {
-    throw new Error("Obsidian desktop did not expose window.require().");
-  }
-  return globalWindow.require;
-}
-
-function resolveElectronRuntime(): DesktopRuntime {
-  const runtimeRequire = resolveRuntimeRequire();
-  const errors: string[] = [];
-
-  try {
-    const remote = readElectronRemote(runtimeRequire("@electron/remote"));
-    if (remote !== null) return remote;
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
-  }
-
-  try {
-    const electron = runtimeRequire("electron") as ElectronModuleLike;
-    const remote = readElectronRemote(electron.remote);
-    if (remote !== null) {
-      const runtime: DesktopRuntime = {
-        BrowserWindow: remote.BrowserWindow,
-      };
-      const screen = remote.screen ?? (isScreenLike(electron.screen) ? electron.screen : undefined);
-      if (screen !== undefined) {
-        runtime.screen = screen;
-      }
-      return runtime;
-    }
-  } catch (error) {
-    errors.push(error instanceof Error ? error.message : String(error));
-  }
-
-  throw new Error(
-    `Obsidian desktop did not expose Electron remote BrowserWindow APIs.${errors.length > 0 ? ` ${errors.join(" ")}` : ""}`
-  );
-}
+const BRIDGE_POLL_MS = 33;
 
 function getPrimaryWorkArea(screen: ScreenLike | undefined): WorkArea {
   if (screen === undefined) {
@@ -179,6 +90,12 @@ function buildInitialPosition(
   workArea: WorkArea
 ): { x: number; y: number } {
   const size = getWindowSize(settings);
+  if (settings.windowPosition !== null) {
+    return {
+      x: settings.windowPosition.x,
+      y: settings.windowPosition.y
+    };
+  }
   return {
     x: Math.round(workArea.x + workArea.width - size.width - PET_WINDOW_MARGIN_PX),
     y: Math.round(workArea.y + workArea.height - size.height - PET_WINDOW_MARGIN_PX)
@@ -192,30 +109,54 @@ function toExecutableLiteral(value: unknown): string {
     .replace(/\u2029/g, "\\u2029");
 }
 
-function buildRendererHtml(settings: PetsidianSettings): string {
-  const pet = getCatalogPet(settings.activePetId, PET_CATALOG);
-  const spriteSize = getPetSpriteSize(settings.scale);
-  const renderScale = getPetRenderScale(settings.scale);
-  const rendererPayload = {
-    atlas: PET_ATLAS,
-    animations: PET_ANIMATIONS,
+function buildRendererSnapshot(
+  settings: PetsidianSettings,
+  catalog: readonly PetCatalogItem[]
+): RendererSnapshot {
+  const pet = getCatalogPet(settings.activePetId, catalog);
+  return {
     settings,
     pet: {
       displayName: pet.displayName,
-      spritesheetUrl: getPetSpritesheetUrl(pet)
-    },
-    spriteSize,
-    renderScale
+      spritesheetUrl: pet.spritesheetUrl
+    }
   };
+}
+
+function buildRendererHtml(): string {
+  const placeholderSettings = {
+    scale: 1,
+    reducedMotion: false,
+    clickActionMode: "fixed",
+    clickAction: "waving",
+    clickActionPool: ["waving"],
+    bubbleStyle: "soft",
+    bubbleFontFamily: "Aptos Display",
+    bubbleFontSizePx: 14,
+    bubbleMaxWidthPx: 292,
+    eventBubbleTtlMs: 4000,
+    autonomousWalking: false,
+    hoverPause: true,
+    idleSelfPlay: true,
+    idleThresholdMs: 45000,
+    idleActionFrequencyMs: 30000,
+    idleAction: "random",
+    language: "en"
+  };
+  const spriteSize = getPetSpriteSize(placeholderSettings.scale);
+  const renderScale = getPetRenderScale(placeholderSettings.scale);
 
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+    <title>Petsidian Desktop Pet</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src data: https:; style-src 'unsafe-inline'; script-src 'unsafe-inline';"
+    >
     <style>
-      html,
-      body {
+      html, body {
         width: 100%;
         height: 100%;
         margin: 0;
@@ -255,15 +196,33 @@ function buildRendererHtml(settings: PetsidianSettings): string {
         overflow-wrap: anywhere;
         opacity: 0;
         transform: translateY(6px);
-        transition:
-          opacity 160ms ease,
-          transform 160ms ease;
+        transition: opacity 160ms ease, transform 160ms ease;
         pointer-events: none;
       }
 
       #bubble.visible {
         opacity: 1;
         transform: translateY(0);
+      }
+
+      body[data-bubble-style="comic"] #bubble {
+        border-width: 2px;
+        border-color: #1f1f1f;
+        background: #fff9d9;
+        box-shadow: 0 8px 0 rgba(31, 31, 31, 0.12);
+      }
+
+      body[data-bubble-style="glass"] #bubble {
+        border-color: rgba(255, 255, 255, 0.26);
+        background: rgba(241, 248, 255, 0.72);
+        backdrop-filter: blur(10px);
+      }
+
+      body[data-bubble-style="terminal"] #bubble {
+        border-color: rgba(38, 255, 120, 0.34);
+        background: rgba(3, 14, 8, 0.92);
+        color: #9dffbc;
+        box-shadow: 0 10px 28px rgba(3, 14, 8, 0.4);
       }
 
       #pet {
@@ -275,17 +234,56 @@ function buildRendererHtml(settings: PetsidianSettings): string {
         border-radius: 999px;
         background-color: transparent;
         background-repeat: no-repeat;
-        background-image: url("${getPetSpritesheetUrl(pet)}");
         background-size: ${PET_ATLAS.width * renderScale}px ${PET_ATLAS.height * renderScale}px;
-        cursor: pointer;
+        cursor: grab;
         filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.22));
         transition: transform 160ms ease;
       }
 
-      #pet:hover,
-      #pet:focus-visible {
+      #pet:hover, #pet:focus-visible {
         outline: none;
         transform: translateY(-2px);
+      }
+
+      #pet.dragging {
+        cursor: grabbing;
+        transform: translateY(0);
+      }
+
+      #context-menu {
+        position: fixed;
+        min-width: 176px;
+        display: none;
+        flex-direction: column;
+        gap: 4px;
+        padding: 8px;
+        border: 1px solid rgba(88, 95, 112, 0.18);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.97);
+        box-shadow: 0 18px 36px rgba(0, 0, 0, 0.18);
+        pointer-events: auto;
+      }
+
+      #context-menu.visible {
+        display: flex;
+      }
+
+      .context-item {
+        width: 100%;
+        border: 0;
+        border-radius: 10px;
+        background: transparent;
+        color: #242936;
+        padding: 9px 10px;
+        text-align: left;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      .context-item:hover,
+      .context-item:focus-visible {
+        outline: none;
+        background: rgba(101, 131, 231, 0.12);
       }
 
       body.reduced-motion #bubble,
@@ -294,23 +292,70 @@ function buildRendererHtml(settings: PetsidianSettings): string {
       }
     </style>
   </head>
-  <body>
+  <body data-bubble-style="soft">
     <main id="root" aria-live="polite">
       <div id="bubble"></div>
       <button id="pet" type="button" aria-label="Petsidian desktop pet"></button>
     </main>
+    <div id="context-menu" role="menu" aria-label="Petsidian pet actions">
+      <button class="context-item" data-command="open-settings" type="button"></button>
+      <button class="context-item" data-command="wave" type="button"></button>
+      <button class="context-item" data-command="toggle-walking" type="button"></button>
+      <button class="context-item" data-command="hide-pet" type="button"></button>
+    </div>
     <script>
       (() => {
         "use strict";
 
-        const state = ${toExecutableLiteral(rendererPayload)};
+        const TRANSLATIONS = {
+          en: {
+            openSettings: "Open settings",
+            wave: "Wave",
+            pauseWalking: "Pause walking",
+            roam: "Let me roam",
+            hidePet: "Hide pet",
+            clickBubble: "Hi from Petsidian!"
+          },
+          "zh-CN": {
+            openSettings: "打开设置",
+            wave: "挥手",
+            pauseWalking: "暂停移动",
+            roam: "自由移动",
+            hidePet: "隐藏宠物",
+            clickBubble: "Petsidian 来啦！"
+          }
+        };
+
+        const state = {
+          atlas: ${toExecutableLiteral(PET_ATLAS)},
+          animations: ${toExecutableLiteral(PET_ANIMATIONS)},
+          settings: ${toExecutableLiteral(placeholderSettings)},
+          pet: {
+            displayName: "Petsidian",
+            spritesheetUrl: ""
+          }
+        };
+
         const petButton = document.getElementById("pet");
         const bubble = document.getElementById("bubble");
+        const contextMenu = document.getElementById("context-menu");
+        const contextItems = Array.from(contextMenu.querySelectorAll("[data-command]"));
+
+        const hostState = {
+          commands: [],
+          drag: null,
+          hovered: false,
+          contextMenuOpen: false
+        };
+
         let activeAnimationId = "idle";
         let animationStartedAtMs = performance.now();
         let actionEndsAtMs = 0;
         let bubbleTimerId = null;
         let walkingDirection = 1;
+        let suppressClick = false;
+        let lastActivityAtMs = performance.now();
+        let lastIdleActionAtMs = 0;
 
         function getAnimation(id) {
           return state.animations[id] || state.animations.idle;
@@ -332,6 +377,18 @@ function buildRendererHtml(settings: PetsidianSettings): string {
           return Math.max(0, animation.frameCount - 1);
         }
 
+        function queueCommand(command) {
+          hostState.commands.push(command);
+        }
+
+        function markActivity() {
+          lastActivityAtMs = performance.now();
+        }
+
+        function getLanguageStrings() {
+          return TRANSLATIONS[state.settings.language] || TRANSLATIONS.en;
+        }
+
         function getFrameOffset(animation, frame) {
           const safeFrame = Math.min(Math.max(0, frame), animation.frameCount - 1);
           const renderScale = Math.max(0.25, state.settings.scale * 0.75);
@@ -348,16 +405,56 @@ function buildRendererHtml(settings: PetsidianSettings): string {
           return pool[Math.floor(Math.random() * pool.length)] || state.settings.clickAction || "waving";
         }
 
-        function applySettings(nextSettings) {
-          state.settings = { ...state.settings, ...nextSettings };
-          const spriteWidth = Math.ceil(state.atlas.cellWidth * Math.max(0.25, state.settings.scale * 0.75));
-          const spriteHeight = Math.ceil(state.atlas.cellHeight * Math.max(0.25, state.settings.scale * 0.75));
+        function pickIdleAction() {
+          if (state.settings.idleAction === "active-action") {
+            return state.settings.clickAction || "waving";
+          }
+          if (state.settings.idleAction === "random") {
+            return pickActionFromPool();
+          }
+          return state.settings.idleAction || "waving";
+        }
+
+        function applyBubbleAppearance() {
+          document.body.dataset.bubbleStyle = state.settings.bubbleStyle || "soft";
+          bubble.style.fontFamily = state.settings.bubbleFontFamily || "Aptos Display";
+          bubble.style.fontSize = (state.settings.bubbleFontSizePx || 14) + "px";
+          bubble.style.maxWidth =
+            "min(" + (state.settings.bubbleMaxWidthPx || 292) + "px, calc(100vw - 24px))";
+        }
+
+        function applyContextMenuLabels() {
+          const strings = getLanguageStrings();
+          const menuLabels = {
+            "open-settings": strings.openSettings,
+            wave: strings.wave,
+            "toggle-walking": state.settings.autonomousWalking ? strings.pauseWalking : strings.roam,
+            "hide-pet": strings.hidePet
+          };
+          for (const item of contextItems) {
+            const command = item.getAttribute("data-command");
+            item.textContent = command && menuLabels[command] ? menuLabels[command] : command;
+          }
+        }
+
+        function applySnapshot(snapshot) {
+          state.settings = { ...state.settings, ...snapshot.settings };
+          state.pet = { ...snapshot.pet };
+
+          const renderScale = Math.max(0.25, state.settings.scale * 0.75);
+          const spriteWidth = Math.ceil(state.atlas.cellWidth * renderScale);
+          const spriteHeight = Math.ceil(state.atlas.cellHeight * renderScale);
           petButton.style.width = spriteWidth + "px";
           petButton.style.height = spriteHeight + "px";
+          petButton.style.backgroundImage = snapshot.pet.spritesheetUrl
+            ? "url(" + JSON.stringify(snapshot.pet.spritesheetUrl) + ")"
+            : "none";
           petButton.style.backgroundSize =
-            (state.atlas.width * Math.max(0.25, state.settings.scale * 0.75)) + "px " +
-            (state.atlas.height * Math.max(0.25, state.settings.scale * 0.75)) + "px";
+            (state.atlas.width * renderScale) + "px " + (state.atlas.height * renderScale) + "px";
+          petButton.setAttribute("aria-label", snapshot.pet.displayName || "Petsidian desktop pet");
           document.body.classList.toggle("reduced-motion", Boolean(state.settings.reducedMotion));
+          applyBubbleAppearance();
+          applyContextMenuLabels();
         }
 
         function hideBubble() {
@@ -365,21 +462,35 @@ function buildRendererHtml(settings: PetsidianSettings): string {
         }
 
         function showBubble(text, ttlMs) {
-          if (!state.settings.bubblesEnabled) return;
           const normalized = String(text || "").trim();
-          if (normalized.length === 0) return;
+          if (!normalized || !state.settings.eventBubbles) return;
           bubble.textContent = normalized.slice(0, 512);
           bubble.classList.add("visible");
           if (bubbleTimerId !== null) window.clearTimeout(bubbleTimerId);
-          bubbleTimerId = window.setTimeout(hideBubble, ttlMs || state.settings.bubbleTtlMs || 4000);
+          bubbleTimerId = window.setTimeout(hideBubble, ttlMs || state.settings.eventBubbleTtlMs || 4000);
         }
 
         function playAction(animationId, bubbleText, ttlMs) {
-          activeAnimationId = typeof animationId === "string" && state.animations[animationId] ? animationId : "waving";
+          markActivity();
+          activeAnimationId =
+            typeof animationId === "string" && state.animations[animationId] ? animationId : "waving";
           const now = performance.now();
           animationStartedAtMs = now;
           actionEndsAtMs = now + getAnimationDuration(getAnimation(activeAnimationId));
           if (bubbleText !== undefined && bubbleText !== null) showBubble(bubbleText, ttlMs);
+        }
+
+        function maybeTriggerIdleAction(now) {
+          const dragActive = Boolean(hostState.drag && !hostState.drag.ended);
+          if (!state.settings.idleSelfPlay || state.settings.reducedMotion || dragActive || hostState.contextMenuOpen || hostState.hovered) {
+            return;
+          }
+          if (activeAnimationId !== "idle") return;
+          if (now - lastActivityAtMs < state.settings.idleThresholdMs) return;
+          if (now - lastIdleActionAtMs < state.settings.idleActionFrequencyMs) return;
+          const idleAction = pickIdleAction();
+          lastIdleActionAtMs = now;
+          playAction(idleAction, null, null);
         }
 
         function renderFrame(now) {
@@ -389,11 +500,10 @@ function buildRendererHtml(settings: PetsidianSettings): string {
             actionEndsAtMs = 0;
           }
 
+          maybeTriggerIdleAction(now);
           const animationId =
             state.settings.autonomousWalking && !state.settings.reducedMotion && activeAnimationId === "idle"
-              ? walkingDirection > 0
-                ? "running-right"
-                : "running-left"
+              ? (walkingDirection > 0 ? "running-right" : "running-left")
               : activeAnimationId;
           const animation = getAnimation(animationId);
           const elapsedMs = state.settings.reducedMotion ? 0 : now - animationStartedAtMs;
@@ -403,28 +513,145 @@ function buildRendererHtml(settings: PetsidianSettings): string {
           window.requestAnimationFrame(renderFrame);
         }
 
+        function closeContextMenu() {
+          hostState.contextMenuOpen = false;
+          contextMenu.classList.remove("visible");
+          document.title = "Petsidian Desktop Pet";
+        }
+
+        function openContextMenu(screenX, screenY) {
+          const menuWidth = 196;
+          const menuHeight = 176;
+          const viewportWidth = window.innerWidth;
+          const viewportHeight = window.innerHeight;
+          const left = Math.min(Math.max(8, screenX - window.screenX), Math.max(8, viewportWidth - menuWidth - 8));
+          const top = Math.min(Math.max(8, screenY - window.screenY), Math.max(8, viewportHeight - menuHeight - 8));
+          contextMenu.style.left = left + "px";
+          contextMenu.style.top = top + "px";
+          hostState.contextMenuOpen = true;
+          contextMenu.classList.add("visible");
+          document.title = "Petsidian Desktop Pet - Menu";
+        }
+
+        petButton.addEventListener("pointerenter", () => {
+          hostState.hovered = true;
+        });
+
+        petButton.addEventListener("pointerleave", () => {
+          hostState.hovered = false;
+        });
+
+        petButton.addEventListener("pointerdown", (event) => {
+          if (event.button !== 0) return;
+          markActivity();
+          closeContextMenu();
+          hostState.drag = {
+            active: true,
+            startScreenX: event.screenX,
+            startScreenY: event.screenY,
+            latestScreenX: event.screenX,
+            latestScreenY: event.screenY,
+            started: false,
+            ended: false
+          };
+          suppressClick = false;
+          petButton.classList.add("dragging");
+          petButton.setPointerCapture?.(event.pointerId);
+        });
+
+        petButton.addEventListener("pointermove", (event) => {
+          const drag = hostState.drag;
+          if (!drag || drag.ended) return;
+          drag.latestScreenX = event.screenX;
+          drag.latestScreenY = event.screenY;
+          if (!drag.started) {
+            const distance = Math.hypot(drag.latestScreenX - drag.startScreenX, drag.latestScreenY - drag.startScreenY);
+            if (distance >= 4) {
+              drag.started = true;
+              suppressClick = true;
+            }
+          }
+        });
+
+        function endDrag() {
+          if (hostState.drag) {
+            hostState.drag.ended = true;
+          }
+          petButton.classList.remove("dragging");
+        }
+
+        petButton.addEventListener("pointerup", () => {
+          endDrag();
+        });
+
+        petButton.addEventListener("pointercancel", () => {
+          endDrag();
+        });
+
         petButton.addEventListener("click", () => {
+          if (suppressClick) {
+            suppressClick = false;
+            return;
+          }
           const animationId = state.settings.clickActionMode === "random"
             ? pickActionFromPool()
             : state.settings.clickAction;
-          playAction(animationId, "Hi from Petsidian!", state.settings.bubbleTtlMs);
+          playAction(animationId, getLanguageStrings().clickBubble, state.settings.eventBubbleTtlMs);
         });
 
         petButton.addEventListener("contextmenu", (event) => {
           event.preventDefault();
-          showBubble("Use Obsidian commands to control Petsidian.", state.settings.bubbleTtlMs);
+          markActivity();
+          openContextMenu(event.screenX, event.screenY);
+        });
+
+        contextItems.forEach((item) => {
+          item.addEventListener("click", () => {
+            const command = item.getAttribute("data-command");
+            if (command === "open-settings" || command === "wave" || command === "toggle-walking" || command === "hide-pet") {
+              queueCommand({ type: command });
+              closeContextMenu();
+            }
+          });
+        });
+
+        document.addEventListener("mousedown", (event) => {
+          if (!contextMenu.contains(event.target) && event.target !== petButton) {
+            closeContextMenu();
+          }
+        });
+
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            closeContextMenu();
+          }
         });
 
         window.PetsidianRenderer = {
-          updateSettings: applySettings,
+          applySnapshot,
           playAction,
           say: showBubble,
           setWalkingDirection: (direction) => {
             walkingDirection = direction >= 0 ? 1 : -1;
+          },
+          flushHostState: () => {
+            const payload = {
+              commands: hostState.commands.splice(0),
+              drag: hostState.drag ? { ...hostState.drag } : null,
+              hovered: hostState.hovered,
+              contextMenuOpen: hostState.contextMenuOpen
+            };
+            if (hostState.drag && hostState.drag.ended) {
+              hostState.drag = null;
+            }
+            return payload;
           }
         };
 
-        applySettings(state.settings);
+        applySnapshot({
+          settings: state.settings,
+          pet: state.pet
+        });
         window.requestAnimationFrame(renderFrame);
       })();
     </script>
@@ -432,16 +659,79 @@ function buildRendererHtml(settings: PetsidianSettings): string {
 </html>`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isRendererCommand(value: unknown): value is RendererCommand {
+  return (
+    isRecord(value) &&
+    typeof value.type === "string" &&
+    ["open-settings", "wave", "toggle-walking", "hide-pet"].includes(value.type)
+  );
+}
+
+function readRendererDragState(value: unknown): RendererDragState | null {
+  if (!isRecord(value)) return null;
+  const startScreenX = value.startScreenX;
+  const startScreenY = value.startScreenY;
+  const latestScreenX = value.latestScreenX;
+  const latestScreenY = value.latestScreenY;
+  if (
+    typeof startScreenX !== "number" ||
+    !Number.isFinite(startScreenX) ||
+    typeof startScreenY !== "number" ||
+    !Number.isFinite(startScreenY) ||
+    typeof latestScreenX !== "number" ||
+    !Number.isFinite(latestScreenX) ||
+    typeof latestScreenY !== "number" ||
+    !Number.isFinite(latestScreenY)
+  ) {
+    return null;
+  }
+  if (typeof value.active !== "boolean" || typeof value.started !== "boolean" || typeof value.ended !== "boolean") {
+    return null;
+  }
+  return {
+    active: value.active,
+    startScreenX,
+    startScreenY,
+    latestScreenX,
+    latestScreenY,
+    started: value.started,
+    ended: value.ended
+  };
+}
+
+function readRendererHostState(value: unknown): RendererHostState | null {
+  if (!isRecord(value) || !Array.isArray(value.commands)) return null;
+  const commands = value.commands.filter(isRendererCommand);
+  if (typeof value.hovered !== "boolean" || typeof value.contextMenuOpen !== "boolean") {
+    return null;
+  }
+  return {
+    commands,
+    drag: readRendererDragState(value.drag),
+    hovered: value.hovered,
+    contextMenuOpen: value.contextMenuOpen
+  };
+}
+
 export class DesktopPetWindow {
-  private readonly getSettings: () => PetsidianSettings;
+  private readonly options: DesktopPetWindowOptions;
   private runtime: DesktopRuntime | null = null;
   private window: BrowserWindowLike | null = null;
   private walkingTimerId: number | null = null;
+  private bridgeTimerId: number | null = null;
+  private bridgePolling = false;
   private walkingDirection = 1;
   private lastWalkTickMs = 0;
+  private dragSession: DragSession | null = null;
+  private hovered = false;
+  private contextMenuOpen = false;
 
-  constructor(getSettings: () => PetsidianSettings) {
-    this.getSettings = getSettings;
+  constructor(options: DesktopPetWindowOptions) {
+    this.options = options;
   }
 
   async show(): Promise<void> {
@@ -449,11 +739,13 @@ export class DesktopPetWindow {
     this.applyNativeSettings(petWindow);
     this.clampWindowToWorkArea(petWindow);
     petWindow.show();
+    this.startBridgePolling();
     await this.refreshFromSettings();
   }
 
   hide(): void {
     this.stopWalking();
+    this.stopBridgePolling();
     if (this.window !== null && !this.window.isDestroyed()) {
       this.window.hide();
     }
@@ -461,6 +753,7 @@ export class DesktopPetWindow {
 
   destroy(): void {
     this.stopWalking();
+    this.stopBridgePolling();
     const petWindow = this.window;
     this.window = null;
     if (petWindow !== null && !petWindow.isDestroyed()) {
@@ -475,12 +768,15 @@ export class DesktopPetWindow {
     const petWindow = this.window;
     if (petWindow === null || petWindow.isDestroyed()) return;
 
-    const settings = this.getSettings();
+    const settings = this.options.getSettings();
     const size = getWindowSize(settings);
     petWindow.setSize(size.width, size.height, false);
     this.applyNativeSettings(petWindow);
     this.clampWindowToWorkArea(petWindow);
-    await this.executeRendererMethod("updateSettings", settings);
+    await this.executeRendererMethod(
+      "applySnapshot",
+      buildRendererSnapshot(settings, this.options.getCatalog())
+    );
     this.updateWalkingState();
   }
 
@@ -502,7 +798,7 @@ export class DesktopPetWindow {
     if (this.window !== null && !this.window.isDestroyed()) return this.window;
 
     this.runtime = this.runtime ?? resolveElectronRuntime();
-    const settings = this.getSettings();
+    const settings = this.options.getSettings();
     const workArea = getPrimaryWorkArea(this.runtime.screen);
     const size = getWindowSize(settings);
     const position = buildInitialPosition(settings, workArea);
@@ -522,9 +818,9 @@ export class DesktopPetWindow {
       backgroundColor: "#00000000",
       title: "Petsidian Desktop Pet",
       webPreferences: {
-        contextIsolation: true,
+        contextIsolation: false,
         nodeIntegration: false,
-        sandbox: true
+        sandbox: false
       }
     });
 
@@ -532,16 +828,18 @@ export class DesktopPetWindow {
       if (this.window === petWindow) {
         this.window = null;
       }
+      this.dragSession = null;
       this.stopWalking();
+      this.stopBridgePolling();
     });
 
     this.window = petWindow;
-    await petWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildRendererHtml(settings))}`);
+    await petWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildRendererHtml())}`);
     return petWindow;
   }
 
   private applyNativeSettings(petWindow: BrowserWindowLike): void {
-    const settings = this.getSettings();
+    const settings = this.options.getSettings();
     petWindow.setAlwaysOnTop(settings.alwaysOnTop, "floating");
     petWindow.setSkipTaskbar(settings.skipTaskbar);
   }
@@ -555,21 +853,19 @@ export class DesktopPetWindow {
     const minY = workArea.y;
     const maxX = Math.max(minX, workArea.x + workArea.width - width);
     const maxY = Math.max(minY, workArea.y + workArea.height - height);
-    const fallback = buildInitialPosition(this.getSettings(), workArea);
-    const nextX = Number.isFinite(currentX)
-      ? Math.min(Math.max(currentX, minX), maxX)
-      : fallback.x;
-    const nextY = Number.isFinite(currentY)
-      ? Math.min(Math.max(currentY, minY), maxY)
-      : fallback.y;
+    const fallback = buildInitialPosition(this.options.getSettings(), workArea);
+    const nextX = Number.isFinite(currentX) ? Math.min(Math.max(currentX, minX), maxX) : fallback.x;
+    const nextY = Number.isFinite(currentY) ? Math.min(Math.max(currentY, minY), maxY) : fallback.y;
     if (nextX !== currentX || nextY !== currentY) {
       petWindow.setPosition(Math.round(nextX), Math.round(nextY), false);
     }
   }
 
   private updateWalkingState(): void {
-    const settings = this.getSettings();
-    if (!settings.autonomousWalking || settings.reducedMotion || this.window === null) {
+    const settings = this.options.getSettings();
+    const pausedByInteraction =
+      (settings.hoverPause && this.hovered) || this.contextMenuOpen || this.dragSession !== null;
+    if (!settings.autonomousWalking || settings.reducedMotion || this.window === null || pausedByInteraction) {
       this.stopWalking();
       return;
     }
@@ -591,6 +887,115 @@ export class DesktopPetWindow {
     }
   }
 
+  private startBridgePolling(): void {
+    if (this.bridgeTimerId !== null) return;
+    this.bridgeTimerId = window.setInterval(() => {
+      void this.pollRendererBridge();
+    }, BRIDGE_POLL_MS);
+  }
+
+  private stopBridgePolling(): void {
+    if (this.bridgeTimerId !== null) {
+      window.clearInterval(this.bridgeTimerId);
+      this.bridgeTimerId = null;
+    }
+  }
+
+  private async pollRendererBridge(): Promise<void> {
+    if (this.bridgePolling) return;
+    const petWindow = this.window;
+    if (petWindow === null || petWindow.isDestroyed()) return;
+    this.bridgePolling = true;
+
+    try {
+      const result = await petWindow.webContents.executeJavaScript(
+        "window.PetsidianRenderer && window.PetsidianRenderer.flushHostState ? window.PetsidianRenderer.flushHostState() : null;",
+        true
+      );
+      const hostState = readRendererHostState(result);
+      if (hostState === null) return;
+      this.hovered = hostState.hovered;
+      this.contextMenuOpen = hostState.contextMenuOpen;
+      await this.handleRendererCommands(hostState.commands);
+      await this.handleRendererDrag(hostState.drag);
+      this.updateWalkingState();
+    } finally {
+      this.bridgePolling = false;
+    }
+  }
+
+  private async handleRendererCommands(commands: readonly RendererCommand[]): Promise<void> {
+    for (const command of commands) {
+      switch (command.type) {
+        case "open-settings":
+          this.options.onOpenSettings();
+          break;
+        case "wave":
+          await this.playAction("waving");
+          break;
+        case "toggle-walking":
+          await this.options.onUpdateSettings({
+            autonomousWalking: !this.options.getSettings().autonomousWalking
+          });
+          break;
+        case "hide-pet":
+          await this.options.onUpdateSettings({ visible: false });
+          break;
+      }
+    }
+  }
+
+  private async handleRendererDrag(drag: RendererDragState | null): Promise<void> {
+    const petWindow = this.window;
+    if (petWindow === null || petWindow.isDestroyed()) return;
+
+    if (drag === null) {
+      if (this.dragSession !== null) {
+        await this.persistWindowPosition();
+      }
+      this.dragSession = null;
+      return;
+    }
+
+    if (!drag.active) {
+      return;
+    }
+
+    if (this.dragSession === null) {
+      const [startWindowX, startWindowY] = petWindow.getPosition();
+      this.dragSession = {
+        startScreenX: drag.startScreenX,
+        startScreenY: drag.startScreenY,
+        startWindowX,
+        startWindowY
+      };
+    }
+
+    if (drag.started) {
+      const nextX = this.dragSession.startWindowX + (drag.latestScreenX - this.dragSession.startScreenX);
+      const nextY = this.dragSession.startWindowY + (drag.latestScreenY - this.dragSession.startScreenY);
+      petWindow.setPosition(Math.round(nextX), Math.round(nextY), false);
+      this.clampWindowToWorkArea(petWindow);
+    }
+
+    if (drag.ended) {
+      await this.persistWindowPosition();
+      this.dragSession = null;
+    }
+  }
+
+  private async persistWindowPosition(): Promise<void> {
+    const petWindow = this.window;
+    if (petWindow === null || petWindow.isDestroyed()) return;
+    const [x, y] = petWindow.getPosition();
+    await this.options.onUpdateSettings({
+      windowPosition: {
+        x: Math.round(x),
+        y: Math.round(y)
+      }
+    });
+  }
+
   private async walkDesktopWindow(): Promise<void> {
     const petWindow = this.window;
     const runtime = this.runtime;
@@ -599,8 +1004,10 @@ export class DesktopPetWindow {
       return;
     }
 
-    const settings = this.getSettings();
-    if (!settings.autonomousWalking || settings.reducedMotion) {
+    const settings = this.options.getSettings();
+    const pausedByInteraction =
+      (settings.hoverPause && this.hovered) || this.contextMenuOpen || this.dragSession !== null;
+    if (!settings.autonomousWalking || settings.reducedMotion || pausedByInteraction) {
       this.stopWalking();
       return;
     }
@@ -632,7 +1039,6 @@ export class DesktopPetWindow {
   private async executeRendererMethod(methodName: string, ...args: readonly unknown[]): Promise<void> {
     const petWindow = this.window;
     if (petWindow === null || petWindow.isDestroyed()) return;
-
     const serializedArgs = args.map(toExecutableLiteral).join(", ");
     await petWindow.webContents.executeJavaScript(
       `window.PetsidianRenderer && window.PetsidianRenderer[${toExecutableLiteral(methodName)}](${serializedArgs});`,

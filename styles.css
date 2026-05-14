@@ -2,3 +2,16 @@
   color: var(--text-muted);
   max-width: 56rem;
 }
+
+.petsidian-settings .setting-item-heading {
+  margin-top: 1rem;
+}
+
+.petsidian-pet-summary,
+.petsidian-storage-note {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  overflow-wrap: anywhere;
+}

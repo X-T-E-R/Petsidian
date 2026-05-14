@@ -1,15 +1,79 @@
 import {
   ensureCommunityPluginEnabled,
   ensurePluginLink,
+  dragWindowHandle,
   launchObsidianForVault,
   listObsidianProcesses,
   prepareSmokeUserDataForVault,
+  rightClickWindowHandle,
   runLoggedCommand,
+  sendEscapeToWindow,
   setPluginVisibleForSmoke,
   stopProcessTree,
+  waitForPetWindowMove,
+  waitForPetWindowTitle,
   waitForWindows,
   writeSmokeArtifact
 } from "./test-vault-utils.mjs";
+
+async function probeDetachedPetInteractions(processId, petWindow) {
+  const contextMenu = {
+    attempted: false,
+    opened: false,
+    closed: false,
+    openProbe: null,
+    closeProbe: null
+  };
+  const drag = {
+    attempted: false,
+    moved: false,
+    probe: null
+  };
+
+  if (!petWindow?.handle || !petWindow?.rect) {
+    return {
+      contextMenu,
+      drag,
+      passed: false,
+      reason: "Pet window handle or rectangle was not available."
+    };
+  }
+
+  contextMenu.attempted = true;
+  rightClickWindowHandle(petWindow.handle);
+  contextMenu.openProbe = await waitForPetWindowTitle(
+    processId,
+    "Petsidian Desktop Pet - Menu",
+    5000
+  );
+  contextMenu.opened = contextMenu.openProbe.success;
+
+  if (contextMenu.opened) {
+    sendEscapeToWindow(petWindow.handle);
+    contextMenu.closeProbe = await waitForPetWindowTitle(
+      processId,
+      "Petsidian Desktop Pet",
+      5000
+    );
+    contextMenu.closed = contextMenu.closeProbe.success;
+  }
+
+  const latestPetWindow =
+    contextMenu.closeProbe?.petWindow ??
+    contextMenu.openProbe?.petWindow ??
+    petWindow;
+  const originalRect = latestPetWindow.rect ?? petWindow.rect;
+  drag.attempted = true;
+  dragWindowHandle(latestPetWindow.handle ?? petWindow.handle, -80, -36);
+  drag.probe = await waitForPetWindowMove(processId, originalRect, 5000);
+  drag.moved = drag.probe.success;
+
+  return {
+    contextMenu,
+    drag,
+    passed: contextMenu.opened && contextMenu.closed && drag.moved
+  };
+}
 
 async function main() {
   const existingObsidian = listObsidianProcesses();
@@ -29,22 +93,27 @@ async function main() {
     }
 
     const probe = await waitForWindows(processId, 45000);
+    const interactionProbe = probe.success
+      ? await probeDetachedPetInteractions(processId, probe.petWindow)
+      : null;
+    const passed = probe.success && interactionProbe?.passed === true;
     const artifact = {
-      passed: probe.success,
+      passed,
       processId,
       launchedAt: new Date().toISOString(),
       existingObsidianProcessIds: existingObsidian.map((processInfo) => processInfo.ProcessId),
       link,
       enabled,
       smokeUserData,
-      probe
+      probe,
+      interactionProbe
     };
 
     evidencePath = writeSmokeArtifact(artifact);
 
-    if (!probe.success) {
+    if (!passed) {
       throw new Error(
-        `Smoke test timed out before both the vault window and the detached pet window appeared. Evidence: ${evidencePath}`
+        `Smoke test failed before the detached pet window and its interaction probes completed. Evidence: ${evidencePath}`
       );
     }
 
@@ -56,6 +125,8 @@ async function main() {
           processId,
           mainWindowTitle: probe.mainWindow?.title ?? null,
           petWindowTitle: probe.petWindow?.title ?? null,
+          contextMenuObserved: interactionProbe?.contextMenu.opened ?? false,
+          dragObserved: interactionProbe?.drag.moved ?? false,
           elapsedMs: probe.elapsedMs
         },
         null,
