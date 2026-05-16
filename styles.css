@@ -3,15 +3,168 @@
   max-width: 56rem;
 }
 
+.petsidian-settings-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0 0.75rem;
+}
+
+.petsidian-settings-nav-button {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  padding: 0.35rem 0.8rem;
+  cursor: pointer;
+}
+
+.petsidian-settings-nav-button:hover,
+.petsidian-settings-nav-button:focus-visible {
+  border-color: var(--interactive-accent);
+  color: var(--text-accent);
+  outline: none;
+}
+
+.petsidian-settings-nav-button.is-active {
+  border-color: var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.petsidian-section-copy {
+  margin-bottom: 1rem;
+}
+
 .petsidian-settings .setting-item-heading {
   margin-top: 1rem;
 }
 
+.petsidian-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.petsidian-link-pill {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  color: var(--text-accent);
+  text-decoration: none;
+}
+
+.petsidian-link-pill:hover {
+  border-color: var(--interactive-accent);
+}
+
+.petsidian-settings-input {
+  width: 100%;
+  min-width: 18rem;
+  max-width: none;
+}
+
+.petsidian-import-flow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+  gap: 0.9rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.petsidian-import-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  background: var(--background-secondary);
+}
+
+.petsidian-import-card.is-wide {
+  grid-column: 1 / -1;
+}
+
+.petsidian-import-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.petsidian-import-card-step {
+  width: fit-content;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.petsidian-import-card-title {
+  margin: 0;
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+}
+
+.petsidian-import-card-copy {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.petsidian-import-source-setting {
+  display: block;
+}
+
+.petsidian-import-source-setting .setting-item-info {
+  margin-bottom: 0.5rem;
+}
+
+.petsidian-import-source-setting .setting-item-control {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: none;
+}
+
+.petsidian-import-source-setting .setting-item-control > * {
+  max-width: none;
+}
+
+.petsidian-import-source-setting .petsidian-settings-input {
+  flex: 1 1 22rem;
+}
+
+.petsidian-import-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--text-muted);
+}
+
+.petsidian-import-list li + li {
+  margin-top: 0.35rem;
+}
+
+.petsidian-import-subtitle {
+  margin: 0;
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
 .petsidian-pet-summary,
-.petsidian-storage-note {
+.petsidian-storage-note,
+.petsidian-settings-status {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   background: var(--background-secondary);
   overflow-wrap: anywhere;
+}
+
+.petsidian-about-links {
+  margin-top: 1rem;
 }

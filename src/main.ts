@@ -1,15 +1,29 @@
 import { Notice, Plugin } from "obsidian";
 import { DesktopPetWindow } from "./desktop-pet-window";
-import { resolveElectronRuntime } from "./electron-runtime";
+import { resolveElectronRuntime, resolveRuntimeRequire } from "./electron-runtime";
+import { NativeObsidianEventController } from "./integration/obsidian-events";
+import { handlePetsidianProtocolRequest } from "./integration/protocol-handler";
+import { createPetsidianApiV1, type PetsidianApiV1 } from "./integration/public-api";
 import {
-  PET_ACTION_LABELS,
-  isPetActionAnimationId,
   type PetActionAnimationId
 } from "./pet/animation";
 import { PET_CATALOG, type ImportedPetRecord } from "./pet/catalog";
-import { COMPANION_EVENTS, COMPANION_EVENT_TYPES, isCompanionEventType, type CompanionEventType } from "./pet/events";
+import { COMPANION_EVENTS, isCompanionEventType } from "./pet/events";
 import { importLocalPetFromSource, importWebsitePetFromUrl } from "./pet/import";
-import { getPetsidianCatalog, normalizePetsidianSettings, type PetsidianSettings } from "./pet/settings";
+import {
+  getPetsidianCatalog,
+  mergeIntegrationSettings,
+  normalizePetsidianSettings,
+  serializePetsidianSettings,
+  type PetsidianSettings
+} from "./pet/settings";
+import {
+  getLocalizedCompanionEventBubble,
+  getLocalizedImportedNotice,
+  getLocalizedNotice,
+  getLocalizedPetActionLabel,
+  getPetUiStrings
+} from "./pet/ui-text";
 import { PetsidianSettingTab } from "./settings-tab";
 
 type ObsidianSettingManager = {
@@ -17,14 +31,79 @@ type ObsidianSettingManager = {
   openTabById: (id: string) => void;
 };
 
+type FileSystemAdapterLike = {
+  getBasePath: () => string;
+};
+
+type NodePathLike = {
+  resolve: (...parts: readonly string[]) => string;
+};
+
+const IMPORTED_PETS_DIRNAME = "imported-pets";
+const IMPORTED_PET_METADATA_FILENAME = "metadata.json";
+const IMPORTED_PET_SPRITESHEET_FILENAME = "spritesheet.webp";
+
+function normalizeStoragePath(pathValue: string): string {
+  return pathValue.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/g, "");
+}
+
+function joinStoragePath(...parts: readonly string[]): string {
+  return normalizeStoragePath(
+    parts
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0)
+      .join("/")
+  );
+}
+
+function getParentStoragePath(pathValue: string): string {
+  const normalized = normalizeStoragePath(pathValue);
+  const lastSlashIndex = normalized.lastIndexOf("/");
+  return lastSlashIndex >= 0 ? normalized.slice(0, lastSlashIndex) : "";
+}
+
+function isFileSystemAdapterLike(value: unknown): value is FileSystemAdapterLike {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "getBasePath" in value &&
+    typeof (value as { getBasePath?: unknown }).getBasePath === "function"
+  );
+}
+
+function encodeWebpDataUrl(bytes: Uint8Array): string {
+  let binary = "";
+  for (let index = 0; index < bytes.byteLength; index += 1) {
+    binary += String.fromCharCode(bytes[index] ?? 0);
+  }
+  return `data:image/webp;base64,${window.btoa(binary)}`;
+}
+
+function decodeWebpDataUrl(dataUrl: string): Uint8Array {
+  const prefix = "data:image/webp;base64,";
+  if (!dataUrl.startsWith(prefix)) {
+    throw new Error("Imported pet spritesheet must be a WebP data URL.");
+  }
+  const binary = window.atob(dataUrl.slice(prefix.length));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
 export default class PetsidianPlugin extends Plugin {
   settings: PetsidianSettings = normalizePetsidianSettings(undefined);
+  apiV1: PetsidianApiV1 | undefined = undefined;
 
   private desktopPetWindow: DesktopPetWindow | null = null;
   private settingsTab: PetsidianSettingTab | null = null;
+  private readonly integrationApiV1 = createPetsidianApiV1(this);
+  private readonly nativeObsidianEvents = new NativeObsidianEventController(this);
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.refreshPublicApiExposure();
 
     this.desktopPetWindow = new DesktopPetWindow({
       getSettings: () => this.settings,
@@ -32,12 +111,9 @@ export default class PetsidianPlugin extends Plugin {
       onOpenSettings: () => this.openSettingsTab(),
       onUpdateSettings: async (partial) => {
         await this.updateSettings(partial);
-      }
+      },
+      preloadScriptPath: this.getDesktopPetPreloadScriptPath()
     });
-
-    if (this.settings.visible) {
-      await this.showDesktopPetWindow();
-    }
 
     this.addRibbonIcon("paw-print", "Toggle Petsidian pet", () => {
       void this.togglePetVisibility();
@@ -46,20 +122,38 @@ export default class PetsidianPlugin extends Plugin {
     this.settingsTab = new PetsidianSettingTab(this.app, this);
     this.addSettingTab(this.settingsTab);
     this.registerCommands();
+    this.registerIntegrationSurfaces();
+    this.registerHostWindowCloseCleanup();
+    this.app.workspace.onLayoutReady(() => {
+      void this.handleLayoutReady();
+    });
   }
 
   onunload(): void {
+    this.apiV1 = undefined;
+    this.nativeObsidianEvents.destroy();
     this.desktopPetWindow?.destroy();
     this.desktopPetWindow = null;
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = normalizePetsidianSettings(await this.loadData());
+    const rawSettings = await this.loadData();
+    let nextSettings = normalizePetsidianSettings(rawSettings);
+    const migration = await this.persistImportedPetsToPluginStorage(nextSettings.importedPets);
+    nextSettings = normalizePetsidianSettings({
+      ...nextSettings,
+      importedPets: await this.hydrateImportedPetsFromStorage(migration.importedPets)
+    });
+    this.settings = nextSettings;
+
+    if (migration.changed || JSON.stringify(serializePetsidianSettings(nextSettings)) !== JSON.stringify(rawSettings ?? null)) {
+      await this.saveData(serializePetsidianSettings(nextSettings));
+    }
   }
 
   async saveSettings(): Promise<void> {
     this.settings = normalizePetsidianSettings(this.settings);
-    await this.saveData(this.settings);
+    await this.saveData(serializePetsidianSettings(this.settings));
     await this.desktopPetWindow?.refreshFromSettings();
   }
 
@@ -68,33 +162,34 @@ export default class PetsidianPlugin extends Plugin {
   }
 
   getPetStorageDir(): string | null {
-    return "Obsidian plugin data.json (imported sprites are stored as WebP data URLs).";
+    return this.getImportedPetsStorageRoot();
   }
 
   async reloadImportedPets(): Promise<void> {
-    await this.updateSettings({ importedPets: [...this.settings.importedPets] });
+    await this.updateSettings({
+      importedPets: await this.hydrateImportedPetsFromStorage(this.settings.importedPets)
+    });
   }
 
   async updateSettings(partial: Partial<PetsidianSettings>): Promise<void> {
     const nextSettings = normalizePetsidianSettings({
       ...this.settings,
-      ...partial
+      ...partial,
+      integrations:
+        partial.integrations === undefined
+          ? this.settings.integrations
+          : mergeIntegrationSettings(this.settings.integrations, partial.integrations)
     });
     const visibilityChanged = nextSettings.visible !== this.settings.visible;
 
     this.settings = nextSettings;
-    await this.saveData(this.settings);
+    this.refreshPublicApiExposure();
+    this.nativeObsidianEvents.refresh();
+    await this.saveData(serializePetsidianSettings(this.settings));
 
     if (visibilityChanged) {
       if (this.settings.visible) {
-        const shown = await this.showDesktopPetWindow();
-        if (!shown) {
-          this.settings = normalizePetsidianSettings({
-            ...this.settings,
-            visible: false
-          });
-          await this.saveData(this.settings);
-        }
+        await this.ensureVisibleWindowShown();
       } else {
         this.desktopPetWindow?.hide();
       }
@@ -111,16 +206,31 @@ export default class PetsidianPlugin extends Plugin {
 
   async setPetVisible(visible: boolean): Promise<void> {
     await this.updateSettings({ visible });
-    new Notice(this.settings.visible ? "Petsidian pet shown." : "Petsidian pet hidden.");
+    new Notice(
+      getLocalizedNotice(
+        this.settings.language,
+        this.settings.visible ? "pet-shown" : "pet-hidden"
+      )
+    );
   }
 
   async triggerAction(animationId: PetActionAnimationId, bubbleText?: string | null): Promise<void> {
     if (!this.settings.visible) {
       await this.updateSettings({ visible: true });
     }
+
+    const resolvedBubbleText =
+      bubbleText === undefined
+        ? (
+            this.settings.eventBubbles
+              ? getLocalizedPetActionLabel(this.settings.language, animationId)
+              : null
+          )
+        : bubbleText;
+
     await this.desktopPetWindow?.playAction(
       animationId,
-      bubbleText ?? (this.settings.eventBubbles ? PET_ACTION_LABELS[animationId] : null),
+      resolvedBubbleText,
       this.settings.eventBubbleTtlMs
     );
   }
@@ -132,7 +242,10 @@ export default class PetsidianPlugin extends Plugin {
     await this.desktopPetWindow?.say(text, ttlMs ?? this.settings.eventBubbleTtlMs);
   }
 
-  async triggerCompanionEvent(eventType: string): Promise<void> {
+  async triggerCompanionEvent(
+    eventType: string,
+    options?: { bubbleText?: string | null }
+  ): Promise<void> {
     if (!isCompanionEventType(eventType)) {
       new Notice(`Unknown Petsidian event: ${eventType}`);
       return;
@@ -147,16 +260,20 @@ export default class PetsidianPlugin extends Plugin {
     }
 
     const eventDefinition = COMPANION_EVENTS[eventType];
+    const bubbleText =
+      options?.bubbleText === undefined
+        ? getLocalizedCompanionEventBubble(this.settings.language, eventType)
+        : options.bubbleText;
     if (!this.settings.eventReactions) {
-      if (this.settings.eventBubbles) {
-        await this.desktopPetWindow?.say(eventDefinition.defaultBubble, this.settings.eventBubbleTtlMs);
+      if (this.settings.eventBubbles && bubbleText !== null) {
+        await this.desktopPetWindow?.say(bubbleText, this.settings.eventBubbleTtlMs);
       }
       return;
     }
 
     await this.desktopPetWindow?.playAction(
       eventDefinition.animationId,
-      this.settings.eventBubbles ? eventDefinition.defaultBubble : null,
+      this.settings.eventBubbles ? bubbleText : null,
       this.settings.eventBubbleTtlMs
     );
   }
@@ -166,21 +283,21 @@ export default class PetsidianPlugin extends Plugin {
       const runtime = resolveElectronRuntime();
       const dialog = runtime.dialog;
       if (dialog === undefined) {
-        new Notice("Electron file dialogs are not available in this Obsidian build.");
+        new Notice(getLocalizedNotice(this.settings.language, "dialog-unavailable"));
         return null;
       }
       const result = await dialog.showOpenDialog(null, {
-        title: "Select a pet package, pet.json, or spritesheet.webp",
+        title: "Select a Codex pet package, pet.json, or supported image file",
         properties: ["openFile", "openDirectory"],
         filters: [
-          { name: "Pet package files", extensions: ["json", "webp"] },
+          { name: "Codex pet files", extensions: ["json", "webp", "png", "jpg", "jpeg", "gif"] },
           { name: "All files", extensions: ["*"] }
         ]
       });
       return result.canceled ? null : (result.filePaths[0] ?? null);
     } catch (error) {
       console.error("Petsidian failed to open the local pet import dialog.", error);
-      new Notice("Petsidian could not open the local pet import dialog.");
+      new Notice(getLocalizedNotice(this.settings.language, "dialog-open-failed"));
       return null;
     }
   }
@@ -196,13 +313,17 @@ export default class PetsidianPlugin extends Plugin {
   }
 
   async removeImportedPet(petId: string): Promise<void> {
+    const petToRemove = this.settings.importedPets.find((pet) => pet.id === petId) ?? null;
     const importedPets = this.settings.importedPets.filter((pet) => pet.id !== petId);
     const nextActivePetId = this.settings.activePetId === petId ? PET_CATALOG[0].id : this.settings.activePetId;
+    if (petToRemove?.spritesheetStoragePath) {
+      await this.removeImportedPetStorage(petToRemove.spritesheetStoragePath);
+    }
     await this.updateSettings({
       importedPets,
       activePetId: nextActivePetId
     });
-    new Notice("Imported pet removed.");
+    new Notice(getLocalizedNotice(this.settings.language, "import-removed"));
   }
 
   openSettingsTab(): void {
@@ -216,17 +337,18 @@ export default class PetsidianPlugin extends Plugin {
     importedPet: ImportedPetRecord,
     force: boolean
   ): Promise<ImportedPetRecord> {
-    const installedPet = {
+    const reservedId = this.reserveImportedPetId(importedPet.id, force);
+    const storedPet = await this.storeImportedPet({
       ...importedPet,
-      id: this.reserveImportedPetId(importedPet.id, force)
-    };
-    const nextImportedPets = this.upsertImportedPet(installedPet);
+      id: reservedId
+    });
+    const nextImportedPets = this.upsertImportedPet(storedPet);
     await this.updateSettings({
       importedPets: nextImportedPets,
-      activePetId: installedPet.id
+      activePetId: storedPet.id
     });
-    new Notice(`Imported ${installedPet.displayName}.`);
-    return installedPet;
+    new Notice(getLocalizedImportedNotice(this.settings.language, storedPet.displayName));
+    return storedPet;
   }
 
   private reserveImportedPetId(rawId: string, force: boolean): string {
@@ -253,6 +375,169 @@ export default class PetsidianPlugin extends Plugin {
     return nextPets;
   }
 
+  private getPluginDataDir(): string {
+    return normalizeStoragePath(
+      this.manifest.dir ?? joinStoragePath(this.app.vault.configDir, "plugins", this.manifest.id)
+    );
+  }
+
+  private getImportedPetsStorageRoot(): string {
+    return joinStoragePath(this.getPluginDataDir(), IMPORTED_PETS_DIRNAME);
+  }
+
+  private getDesktopPetPreloadScriptPath(): string | null {
+    if (!isFileSystemAdapterLike(this.app.vault.adapter)) {
+      return null;
+    }
+
+    try {
+      const runtimeRequire = resolveRuntimeRequire();
+      const nodePath = runtimeRequire("node:path") as NodePathLike;
+      const pluginDir = this.manifest.dir ?? joinStoragePath(this.app.vault.configDir, "plugins", this.manifest.id);
+      return nodePath.resolve(
+        this.app.vault.adapter.getBasePath(),
+        pluginDir,
+        "desktop-pet-preload.js"
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private async ensureStorageDirectoryExists(pathValue: string): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    const normalizedPath = normalizeStoragePath(pathValue);
+    if (normalizedPath.length === 0 || (await adapter.exists(normalizedPath))) {
+      return;
+    }
+
+    const parentPath = getParentStoragePath(normalizedPath);
+    if (parentPath.length > 0 && parentPath !== normalizedPath) {
+      await this.ensureStorageDirectoryExists(parentPath);
+    }
+
+    if (!(await adapter.exists(normalizedPath))) {
+      await adapter.mkdir(normalizedPath);
+    }
+  }
+
+  private createImportedPetStorageDir(petId: string): string {
+    const importKey = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return joinStoragePath(this.getImportedPetsStorageRoot(), petId, importKey);
+  }
+
+  private async storeImportedPet(importedPet: ImportedPetRecord): Promise<ImportedPetRecord> {
+    if (!importedPet.spritesheetDataUrl) {
+      throw new Error(`Imported pet '${importedPet.id}' is missing spritesheet data.`);
+    }
+
+    const adapter = this.app.vault.adapter;
+    const importDir = this.createImportedPetStorageDir(importedPet.id);
+    const spritesheetStoragePath = joinStoragePath(importDir, IMPORTED_PET_SPRITESHEET_FILENAME);
+    const metadataPath = joinStoragePath(importDir, IMPORTED_PET_METADATA_FILENAME);
+    const spritesheetBytes = decodeWebpDataUrl(importedPet.spritesheetDataUrl);
+    const exactBytes = spritesheetBytes.slice();
+
+    await this.ensureStorageDirectoryExists(importDir);
+    await adapter.writeBinary(
+      spritesheetStoragePath,
+      exactBytes.buffer as ArrayBuffer
+    );
+    await adapter.write(
+      metadataPath,
+      JSON.stringify(
+        {
+          id: importedPet.id,
+          displayName: importedPet.displayName,
+          description: importedPet.description,
+          sourceName: importedPet.sourceName ?? null,
+          sourceUrl: importedPet.sourceUrl ?? null
+        },
+        null,
+        2
+      )
+    );
+
+    return {
+      ...importedPet,
+      spritesheetStoragePath
+    };
+  }
+
+  private async persistImportedPetsToPluginStorage(
+    importedPets: readonly ImportedPetRecord[]
+  ): Promise<{ importedPets: ImportedPetRecord[]; changed: boolean }> {
+    const nextImportedPets: ImportedPetRecord[] = [];
+    let changed = false;
+
+    for (const importedPet of importedPets) {
+      if (importedPet.spritesheetStoragePath) {
+        nextImportedPets.push(importedPet);
+        continue;
+      }
+      if (!importedPet.spritesheetDataUrl) {
+        changed = true;
+        continue;
+      }
+      nextImportedPets.push(await this.storeImportedPet(importedPet));
+      changed = true;
+    }
+
+    return {
+      importedPets: nextImportedPets,
+      changed
+    };
+  }
+
+  private async hydrateImportedPetsFromStorage(
+    importedPets: readonly ImportedPetRecord[]
+  ): Promise<ImportedPetRecord[]> {
+    const adapter = this.app.vault.adapter;
+    const nextImportedPets: ImportedPetRecord[] = [];
+
+    for (const importedPet of importedPets) {
+      if (!importedPet.spritesheetStoragePath) {
+        if (importedPet.spritesheetDataUrl) {
+          nextImportedPets.push(importedPet);
+        }
+        continue;
+      }
+
+      try {
+        const bytes = await adapter.readBinary(importedPet.spritesheetStoragePath);
+        nextImportedPets.push({
+          ...importedPet,
+          spritesheetDataUrl: encodeWebpDataUrl(new Uint8Array(bytes))
+        });
+      } catch (error) {
+        console.error(
+          `Petsidian could not reload imported pet '${importedPet.id}' from ${importedPet.spritesheetStoragePath}.`,
+          error
+        );
+        if (importedPet.spritesheetDataUrl) {
+          nextImportedPets.push(importedPet);
+        }
+      }
+    }
+
+    return nextImportedPets;
+  }
+
+  private async removeImportedPetStorage(spritesheetStoragePath: string): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    const importDir = getParentStoragePath(spritesheetStoragePath);
+    if (importDir.length === 0) {
+      if (await adapter.exists(spritesheetStoragePath)) {
+        await adapter.remove(spritesheetStoragePath);
+      }
+      return;
+    }
+
+    if (await adapter.exists(importDir)) {
+      await adapter.rmdir(importDir, true);
+    }
+  }
+
   private async showDesktopPetWindow(): Promise<boolean> {
     try {
       await this.desktopPetWindow?.show();
@@ -264,6 +549,21 @@ export default class PetsidianPlugin extends Plugin {
       );
       return false;
     }
+  }
+
+  private async ensureVisibleWindowShown(): Promise<boolean> {
+    const shown = await this.showDesktopPetWindow();
+    if (shown) {
+      return true;
+    }
+
+    this.settings = normalizePetsidianSettings({
+      ...this.settings,
+      visible: false
+    });
+    await this.saveData(serializePetsidianSettings(this.settings));
+    this.settingsTab?.display();
+    return false;
   }
 
   private registerCommands(): void {
@@ -303,42 +603,47 @@ export default class PetsidianPlugin extends Plugin {
       id: "wave",
       name: "Wave",
       callback: () => {
-        void this.triggerAction("waving", "Hello from Petsidian!");
+        void this.triggerAction("waving", getPetUiStrings(this.settings.language).waveBubble);
       }
     });
+  }
 
-    this.addCommand({
-      id: "say-sample-message",
-      name: "Say sample message",
-      callback: () => {
-        void this.say("Petsidian is a detached desktop pet.");
-      }
+  private refreshPublicApiExposure(): void {
+    this.apiV1 = this.settings.integrations.apiEnabled ? this.integrationApiV1 : undefined;
+  }
+
+  private registerIntegrationSurfaces(): void {
+    this.registerObsidianProtocolHandler("petsidian", (params) => {
+      void handlePetsidianProtocolRequest(this, params);
     });
+  }
 
-    for (const eventType of COMPANION_EVENT_TYPES) {
-      this.addCompanionEventCommand(eventType);
-    }
-
-    for (const animationId of Object.keys(PET_ACTION_LABELS)) {
-      if (isPetActionAnimationId(animationId)) {
-        this.addCommand({
-          id: `play-${animationId}`,
-          name: `Play pet action: ${PET_ACTION_LABELS[animationId]}`,
-          callback: () => {
-            void this.triggerAction(animationId);
-          }
-        });
+  private registerHostWindowCloseCleanup(): void {
+    try {
+      const runtime = resolveElectronRuntime();
+      const hostWindow = runtime.getCurrentWindow?.();
+      if (hostWindow === undefined || typeof hostWindow.on !== "function") {
+        return;
       }
+
+      const closeDetachedPet = () => {
+        this.desktopPetWindow?.destroy();
+        this.desktopPetWindow = null;
+      };
+
+      hostWindow.on("close", closeDetachedPet);
+      this.register(() => {
+        hostWindow.removeListener?.("close", closeDetachedPet);
+      });
+    } catch {
+      // Optional Electron host-window cleanup path only.
     }
   }
 
-  private addCompanionEventCommand(eventType: CompanionEventType): void {
-    this.addCommand({
-      id: `trigger-event-${eventType}`,
-      name: `Trigger companion event: ${COMPANION_EVENTS[eventType].label}`,
-      callback: () => {
-        void this.triggerCompanionEvent(eventType);
-      }
-    });
+  private async handleLayoutReady(): Promise<void> {
+    this.nativeObsidianEvents.onLayoutReady();
+    if (this.settings.visible) {
+      await this.ensureVisibleWindowShown();
+    }
   }
 }

@@ -1,140 +1,127 @@
+<p align="center">
+  <img src="assets/brand/petsidian-logo.png" alt="Petsidian logo" width="180" />
+</p>
+
 # Petsidian
 
-Petsidian is a desktop-only Obsidian plugin that hosts a detached desktop pet. Obsidian owns the plugin lifecycle, settings, and commands; the pet itself lives in a separate transparent Electron window outside the main Obsidian window.
+[简体中文](README.zh-CN.md)
 
-## What It Is
+Petsidian is a desktop-only Obsidian plugin that keeps a detached pet beside your vault. It brings Codex pet imports, actions, bubbles, and desktop behavior into Obsidian's Electron runtime.
 
-- A detached transparent desktop pet window for Obsidian desktop.
-- A strict TypeScript Obsidian plugin bundled with esbuild.
-- An Obsidian-hosted adaptation of OpenPet's portable animation atlas, action ids, companion event types, import flow, bubbles, movement, and pet interaction concepts.
+GitHub: <https://github.com/X-T-E-R/Petsidian>
 
-## What It Is Not
+## Quick Start
 
-Petsidian is not a mobile or browser plugin. It depends on Obsidian desktop's Electron/Node runtime and sets `isDesktopOnly` to `true`.
+After Petsidian is approved for the Obsidian Community directory, install it from **Settings → Community plugins → Browse**.
 
-Petsidian does not embed OpenPet's Tauri shell. It does not include a system tray menu, a localhost HTTP API, an MCP bridge, or Tauri's OS-level cursor pass-through controls. The detached window uses Electron APIs exposed by Obsidian desktop.
+To install manually from GitHub Releases:
+
+1. Download `main.js`, `desktop-pet-preload.js`, `manifest.json`, and `styles.css`.
+2. Put them in `VaultFolder/.obsidian/plugins/petsidian/`.
+3. Reload Obsidian desktop and enable Petsidian.
+
+Petsidian uses Obsidian desktop's Electron / Node APIs and keeps `isDesktopOnly: true`.
+It targets Obsidian desktop on Windows, macOS, and Linux, but this repository has not runtime-tested the detached pet window on macOS yet.
 
 ## Features
 
-- Toggleable detached pet window created with Electron `BrowserWindow`.
-- Transparent frameless desktop window with always-on-top and skip-taskbar settings.
-- Generated bundled `nia` atlas fallback with the OpenPet atlas geometry.
-- Pet import from a local package directory, `pet.json`, or `.webp` spritesheet.
-- Website pet import for Petdex, Codex Pets, and compatible HTTPS pages that expose a `spritesheet.webp`.
-- Imported-pet catalog selection and removal from the settings tab.
-- Click action with fixed or random action selection.
-- Speech bubbles with configurable duration, style, font, and max width.
-- Optional autonomous desktop walking, hover pause, idle self-play, and drag-to-position within the primary display work area.
-- Pet right-click menu for settings, wave, roaming toggle, and hiding the pet.
-- Commands for show, hide, toggle, wave, sample speech, direct actions, and companion events.
-- Settings tab using Obsidian `PluginSettingTab` and `loadData()` / `saveData()`.
-- Scoped CSS classes prefixed with `petsidian-`.
+- Transparent detached pet window outside the main Obsidian window.
+- Bundled original OpenPet `nia` pet.
+- Local import for Codex pet packages, `pet.json`, atlas `.webp`, and static images.
+- Web import for Petdex, Codex Pets, and compatible HTTPS pet pages.
+- Click actions, random action pool, idle self-play, autonomous walking, drag-to-position, and event bubbles.
+- English / Simplified Chinese settings UI.
+- Optional plugin API, `obsidian://petsidian` URI handler, and native Obsidian event reactions.
 
-## Imported Pets
+## Import Pets
 
-Imported pets use the OpenPet atlas contract: a WebP spritesheet compatible with the bundled animation rows and a `pet.json` manifest when importing a package. For this plugin pass, imported spritesheets are stored in Obsidian plugin settings as WebP data URLs together with display metadata. This keeps release artifacts simple, but very large imports can make the plugin data file larger.
-
-Website import accepts HTTPS pages only and blocks localhost/private-address URLs. Supported source shapes include:
-
-- Petdex detail pages such as `https://petdex.crafter.run/pets/boba`
-- Codex Pets share/detail URLs
-- Generic pages whose metadata or HTML exposes a likely `spritesheet.webp`
-
-## Build
-
-```bash
-pnpm install
-pnpm typecheck
-pnpm build
-```
-
-The build emits the local-test/install payload in `dist/`:
-
-- `dist/main.js`
-- `dist/manifest.json`
-- `dist/styles.css`
-- `dist/versions.json`
-
-`manifest.json`, `styles.css`, and `versions.json` stay at the repository root as source files and are copied into `dist/` on each build.
-
-## Local Test Vault Workflow
-
-For the real test vault at `C:\Users\xxoy1\OneDrive\Obsidian\testVault\测试仓库`:
-
-```bash
-pnpm build
-pnpm link:test-vault
-pnpm enable:test-vault-plugin
-```
-
-The link step points:
+Local import accepts:
 
 ```text
-C:\Users\xxoy1\OneDrive\Obsidian\testVault\测试仓库\.obsidian\plugins\petsidian
--> C:\Programs\petsidian\dist
+pet.json
+spritesheet.webp
 ```
 
-The script prefers a directory symbolic link and falls back to a junction on Windows when symbolic-link permissions are unavailable. If a real non-link plugin directory already exists, the script backs it up with a timestamped `.backup-*` suffix instead of deleting it.
+It also accepts Codex pet package folders, Codex pet atlas `.webp` files, and single `.png`, `.jpg`, `.jpeg`, `.gif`, or `.webp` images. Static images are converted into an `8×9` WebP atlas.
 
-You can run both setup steps together with:
+Web import supports:
 
-```bash
+- [Petdex](https://petdex.crafter.run/): `https://petdex.crafter.run/pets/<slug>`
+- [Codex Pets](https://codex-pets.net/): share/detail links
+- Compatible public HTTPS pages that expose a pet spritesheet
+
+Website import downloads public metadata and spritesheets for the URL you provide. It does not execute third-party install commands.
+
+## Automation
+
+Stable command IDs:
+
+- `petsidian:toggle-pet`
+- `petsidian:show-pet`
+- `petsidian:hide-pet`
+- `petsidian:open-settings`
+- `petsidian:wave`
+
+When enabled in settings, other plugins can call `app.plugins.plugins.petsidian.apiV1`.
+
+When enabled in settings, `obsidian://petsidian?...` accepts only allowlisted actions, events, visibility changes, text, and `ttlMs`.
+
+Native Obsidian event reactions are opt-in and debounced.
+
+## Developer Checks
+
+Default checks:
+
+```powershell
+pnpm typecheck
+pnpm build
+git diff --check
+```
+
+Optional runtime checks:
+
+```powershell
 pnpm prepare:test-vault
-```
-
-## Automated Obsidian Smoke Test
-
-```bash
 pnpm smoke:obsidian
-```
-
-The smoke script will:
-
-1. Build the plugin into `dist/`.
-2. Refresh the test-vault plugin link.
-3. Ensure `petsidian` is present in `.obsidian/community-plugins.json` without removing existing plugins.
-4. Temporarily force `visible: true` in the plugin data so the detached pet window should appear.
-5. Launch `Obsidian.exe` against the test vault.
-6. Wait for both the vault window and the detached `Petsidian Desktop Pet` window.
-7. Write JSON evidence to `artifacts/obsidian-smoke/latest.json`.
-8. Close only the Obsidian process tree started by the smoke script, then restore the prior plugin visibility setting.
-
-The fresh smoke runner uses an isolated Obsidian user-data directory under
-`artifacts/obsidian-smoke/user-data`, so it can run while another normal
-Obsidian instance is open. Before launch it copies the default Obsidian
-`Local Storage` directory into the isolated profile, excluding lock files, so
-the isolated profile keeps the existing community-plugin consent state needed
-for real plugin loading.
-
-The smoke test is designed for CLI verification, but a manual visual pass is still recommended when changing renderer details, transparency behavior, or drag/movement behavior.
-
-If the configured test vault is already open in Obsidian, use the attached smoke
-runner instead:
-
-```bash
 pnpm smoke:obsidian:attached
 ```
 
-The attached runner builds, refreshes the `dist/` link, enables the plugin,
-temporarily sets `visible: true`, sends a reload shortcut to the already-open
-test-vault window, waits for the detached `Petsidian Desktop Pet` window, writes
-JSON evidence, and closes only the pet window it observed.
+Use runtime checks when detached-window behavior, import runtime behavior, or release packaging needs a real Obsidian spot check.
 
-## Manual Install For Local Testing
+## Release
 
-1. Build the plugin.
-2. Copy the contents of `dist/`, or symlink `dist/` into `.obsidian/plugins/petsidian/`.
-3. Open the vault in Obsidian desktop, reload plugins, and enable Petsidian.
-4. Use the Petsidian commands or settings tab to show the detached pet.
+```powershell
+pnpm build
+```
 
-Use a test vault while developing plugins. Runtime behavior must be smoke-tested in Obsidian desktop because the detached window relies on Electron APIs exposed by that host.
+Before publishing, run through [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md).
 
-## Release Artifacts
+Release tags must exactly match `manifest.json.version`, for example `0.1.0` rather than `v0.1.0`. The GitHub Actions workflow uploads `main.js`, `desktop-pet-preload.js`, `manifest.json`, `styles.css`, `versions.json`, and a manual install zip.
 
-Obsidian community plugin releases normally attach:
+## Safety And Rights
 
-- `manifest.json`
-- `main.js`
-- `styles.css`
+- Website import only makes outbound HTTPS requests when you use it.
+- Local import only reads files or folders you choose.
+- No telemetry.
+- No ads.
+- No self-update mechanism.
+- Imported pets may include third-party artwork or trademarks. Only import pets you have the right to use.
+- Petsidian is GPL-3.0-or-later; imported pets may have separate rights requirements.
 
-Additional binary pet assets are intentionally not required by this MVP. The bundled Nia fallback is generated as a data URL from TypeScript so the first build does not depend on unverified extra release asset installation.
+## Project Links
+
+- GitHub: <https://github.com/X-T-E-R/Petsidian>
+- Support / Buy me a milk tea: <https://afdian.com/a/xter123>
+
+## Friendly Links
+
+- [OpenPet](https://github.com/X-T-E-R/OpenPet)
+- [linux.do](https://linux.do)
+- [Petdex](https://petdex.crafter.run/)
+- [Codex Pets](https://codex-pets.net/)
+
+## License And Attribution
+
+Petsidian is released under [GPL-3.0-or-later](./LICENSE).
+
+The bundled `nia` pet and OpenPet-compatible atlas behavior come from [OpenPet](https://github.com/X-T-E-R/OpenPet). Imported third-party pets remain subject to their own licenses.

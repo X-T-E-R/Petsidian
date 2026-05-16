@@ -19,6 +19,7 @@ export type BrowserWindowOptions = {
     contextIsolation: boolean;
     nodeIntegration: boolean;
     sandbox: boolean;
+    preload?: string;
   };
 };
 
@@ -33,13 +34,27 @@ export type DisplayLike = {
   workArea: WorkArea;
 };
 
+export type ScreenPointLike = {
+  x: number;
+  y: number;
+};
+
 export type ScreenLike = {
   getPrimaryDisplay: () => DisplayLike;
+  getDisplayMatching?: (bounds: WorkArea) => DisplayLike;
+  getDisplayNearestPoint?: (point: ScreenPointLike) => DisplayLike;
+  getCursorScreenPoint?: () => ScreenPointLike;
 };
 
 export type WebContentsLike = {
   executeJavaScript: (script: string, userGesture?: boolean) => Promise<unknown>;
 };
+
+type IgnoreMouseEventsOptions = {
+  forward?: boolean;
+};
+
+type BrowserWindowEventName = "close" | "closed";
 
 export type BrowserWindowLike = {
   webContents: WebContentsLike;
@@ -55,7 +70,14 @@ export type BrowserWindowLike = {
   setPosition: (x: number, y: number, animate?: boolean) => void;
   getPosition: () => [number, number];
   getSize: () => [number, number];
-  once: (event: "closed", callback: () => void) => void;
+  isFocused?: () => boolean;
+  once: (event: BrowserWindowEventName, callback: () => void) => void;
+  on?: (event: BrowserWindowEventName, callback: () => void) => void;
+  removeListener?: (event: BrowserWindowEventName, callback: () => void) => void;
+  setIgnoreMouseEvents?: (
+    ignore: boolean,
+    options?: IgnoreMouseEventsOptions
+  ) => void;
 };
 
 export type BrowserWindowConstructor = new (
@@ -87,6 +109,7 @@ type ElectronRemoteLike = {
   BrowserWindow?: BrowserWindowConstructor;
   screen?: ScreenLike;
   dialog?: DialogLike;
+  getCurrentWindow?: () => BrowserWindowLike;
 };
 
 type ElectronModuleLike = {
@@ -99,6 +122,7 @@ export type DesktopRuntime = {
   BrowserWindow: BrowserWindowConstructor;
   screen?: ScreenLike;
   dialog?: DialogLike;
+  getCurrentWindow?: () => BrowserWindowLike;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -110,7 +134,13 @@ function isBrowserWindowConstructor(value: unknown): value is BrowserWindowConst
 }
 
 function isScreenLike(value: unknown): value is ScreenLike {
-  return isRecord(value) && typeof value.getPrimaryDisplay === "function";
+  return (
+    isRecord(value) &&
+    typeof value.getPrimaryDisplay === "function" &&
+    (value.getDisplayMatching === undefined || typeof value.getDisplayMatching === "function") &&
+    (value.getDisplayNearestPoint === undefined || typeof value.getDisplayNearestPoint === "function") &&
+    (value.getCursorScreenPoint === undefined || typeof value.getCursorScreenPoint === "function")
+  );
 }
 
 function isDialogLike(value: unknown): value is DialogLike {
@@ -128,6 +158,9 @@ function readElectronRemote(value: unknown): ElectronRemoteLike | null {
   }
   if (isDialogLike(value.dialog)) {
     remote.dialog = value.dialog;
+  }
+  if (typeof value.getCurrentWindow === "function") {
+    remote.getCurrentWindow = value.getCurrentWindow as () => BrowserWindowLike;
   }
   return remote.BrowserWindow ? remote : null;
 }
@@ -152,6 +185,7 @@ export function resolveElectronRuntime(): DesktopRuntime {
       };
       if (remote.screen !== undefined) runtime.screen = remote.screen;
       if (remote.dialog !== undefined) runtime.dialog = remote.dialog;
+      if (remote.getCurrentWindow !== undefined) runtime.getCurrentWindow = remote.getCurrentWindow;
       return runtime;
     }
   } catch (error) {
@@ -169,6 +203,7 @@ export function resolveElectronRuntime(): DesktopRuntime {
       const dialog = remote.dialog ?? (isDialogLike(electron.dialog) ? electron.dialog : undefined);
       if (screen !== undefined) runtime.screen = screen;
       if (dialog !== undefined) runtime.dialog = dialog;
+      if (remote.getCurrentWindow !== undefined) runtime.getCurrentWindow = remote.getCurrentWindow;
       return runtime;
     }
   } catch (error) {

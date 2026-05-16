@@ -5,8 +5,21 @@ import {
   type PetActionAnimationId
 } from "./animation";
 import {
+  DEFAULT_PROTOCOL_SAY_MAX_LENGTH,
+  PROTOCOL_TTL_MAX_MS,
+  PROTOCOL_TTL_MIN_MS
+} from "../integration/constants";
+import {
+  DEFAULT_NATIVE_EVENT_COOLDOWN_MS,
+  DEFAULT_NATIVE_OBSIDIAN_SIGNAL_SETTINGS,
+  NATIVE_OBSIDIAN_SIGNAL_KEYS,
+  type NativeObsidianSignalKey,
+  type NativeObsidianSignalSettings
+} from "../integration/native-events";
+import {
   getCatalogPet,
   getCombinedPetCatalog,
+  hasImportedPetSpritesheetData,
   type ImportedPetRecord,
   type PetCatalogItem,
   type PetId
@@ -19,6 +32,22 @@ export type BubbleStyle = "soft" | "comic" | "glass" | "terminal";
 export type PetWindowPosition = {
   x: number;
   y: number;
+};
+
+export type PetsidianIntegrationSettings = {
+  apiEnabled: boolean;
+  protocolHandlerEnabled: boolean;
+  protocolSayMaxLength: number;
+  protocolDefaultTtlMs: number;
+  nativeEventReactionsEnabled: boolean;
+  nativeEventCooldownMs: number;
+  nativeSignals: NativeObsidianSignalSettings;
+};
+
+export type PartialPetsidianIntegrationSettings = Partial<
+  Omit<PetsidianIntegrationSettings, "nativeSignals">
+> & {
+  nativeSignals?: Partial<NativeObsidianSignalSettings>;
 };
 
 const BUBBLE_STYLES = ["soft", "comic", "glass", "terminal"] as const;
@@ -57,6 +86,17 @@ export type PetsidianSettings = {
   skipTaskbar: boolean;
   importedPets: ImportedPetRecord[];
   windowPosition: PetWindowPosition | null;
+  integrations: PetsidianIntegrationSettings;
+};
+
+export const DEFAULT_INTEGRATION_SETTINGS: PetsidianIntegrationSettings = {
+  apiEnabled: true,
+  protocolHandlerEnabled: false,
+  protocolSayMaxLength: DEFAULT_PROTOCOL_SAY_MAX_LENGTH,
+  protocolDefaultTtlMs: 4000,
+  nativeEventReactionsEnabled: false,
+  nativeEventCooldownMs: DEFAULT_NATIVE_EVENT_COOLDOWN_MS,
+  nativeSignals: { ...DEFAULT_NATIVE_OBSIDIAN_SIGNAL_SETTINGS }
 };
 
 export const DEFAULT_SETTINGS: PetsidianSettings = {
@@ -64,7 +104,7 @@ export const DEFAULT_SETTINGS: PetsidianSettings = {
   language: "en",
   scale: 1,
   reducedMotion: false,
-  activePetId: "nia",
+  activePetId: "petsidian-cub",
   clickActionMode: "random",
   clickAction: "waving",
   clickActionPool: ["waving", "jumping", "waiting", "running", "review"],
@@ -85,7 +125,8 @@ export const DEFAULT_SETTINGS: PetsidianSettings = {
   alwaysOnTop: true,
   skipTaskbar: true,
   importedPets: [],
-  windowPosition: null
+  windowPosition: null,
+  integrations: { ...DEFAULT_INTEGRATION_SETTINGS }
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -160,21 +201,34 @@ function readBubbleTtlMs(source: Record<string, unknown>): number {
 
 function readActivePetId(
   source: Record<string, unknown>,
+  importedPets: readonly ImportedPetRecord[],
   catalog: readonly PetCatalogItem[]
 ): PetId {
   const rawPetId = source.activePetId;
-  return typeof rawPetId === "string"
-    ? getCatalogPet(rawPetId, catalog).id
-    : DEFAULT_SETTINGS.activePetId;
+  if (typeof rawPetId !== "string") {
+    return DEFAULT_SETTINGS.activePetId;
+  }
+
+  if (importedPets.some((pet) => pet.id === rawPetId)) {
+    return rawPetId;
+  }
+
+  return getCatalogPet(rawPetId, catalog).id;
 }
 
 function isImportedPetRecord(value: unknown): value is ImportedPetRecord {
   if (!isRecord(value)) return false;
+  const hasDataUrl =
+    typeof value.spritesheetDataUrl === "string" &&
+    value.spritesheetDataUrl.length > 0;
+  const hasStoragePath =
+    typeof value.spritesheetStoragePath === "string" &&
+    value.spritesheetStoragePath.length > 0;
   return (
     typeof value.id === "string" &&
     typeof value.displayName === "string" &&
     typeof value.description === "string" &&
-    typeof value.spritesheetDataUrl === "string"
+    (hasDataUrl || hasStoragePath)
   );
 }
 
@@ -182,12 +236,16 @@ function normalizeImportedPet(pet: ImportedPetRecord): ImportedPetRecord | null 
   const id = pet.id.trim();
   const displayName = pet.displayName.trim();
   const description = pet.description.trim();
-  const spritesheetDataUrl = pet.spritesheetDataUrl.trim();
+  const spritesheetDataUrl = pet.spritesheetDataUrl?.trim() ?? null;
+  const spritesheetStoragePath = pet.spritesheetStoragePath?.trim() ?? null;
   if (
     id.length < 2 ||
     displayName.length === 0 ||
     description.length === 0 ||
-    !spritesheetDataUrl.startsWith("data:image/webp;base64,")
+    (
+      (spritesheetDataUrl === null || !spritesheetDataUrl.startsWith("data:image/webp;base64,")) &&
+      (spritesheetStoragePath === null || spritesheetStoragePath.length === 0)
+    )
   ) {
     return null;
   }
@@ -197,6 +255,7 @@ function normalizeImportedPet(pet: ImportedPetRecord): ImportedPetRecord | null 
     displayName: displayName.slice(0, 96),
     description: description.slice(0, 280),
     spritesheetDataUrl,
+    spritesheetStoragePath,
     sourceName: pet.sourceName?.trim().slice(0, 80) || null,
     sourceUrl: pet.sourceUrl?.trim().slice(0, 500) || null
   };
@@ -232,13 +291,124 @@ function readWindowPosition(source: Record<string, unknown>): PetWindowPosition 
   };
 }
 
+function readIntegrations(source: Record<string, unknown>): PetsidianIntegrationSettings {
+  const rawIntegrations = isRecord(source.integrations) ? source.integrations : null;
+  const rawNativeSignals = isRecord(rawIntegrations?.nativeSignals)
+    ? rawIntegrations.nativeSignals
+    : isRecord(source.nativeSignals)
+      ? source.nativeSignals
+      : null;
+
+  const apiEnabled = readBoolean(
+    rawIntegrations ?? source,
+    "apiEnabled",
+    readBoolean(source, "integrationApiEnabled", DEFAULT_INTEGRATION_SETTINGS.apiEnabled)
+  );
+  const protocolHandlerEnabled = readBoolean(
+    rawIntegrations ?? source,
+    "protocolHandlerEnabled",
+    readBoolean(
+      source,
+      "protocolHandlerEnabled",
+      DEFAULT_INTEGRATION_SETTINGS.protocolHandlerEnabled
+    )
+  );
+  const protocolSayMaxLength = Math.round(
+    readNumber(
+      rawIntegrations ?? source,
+      "protocolSayMaxLength",
+      readNumber(
+        source,
+        "integrationProtocolSayMaxLength",
+        DEFAULT_INTEGRATION_SETTINGS.protocolSayMaxLength,
+        32,
+        1000
+      ),
+      32,
+      1000
+    )
+  );
+  const protocolDefaultTtlMs = Math.round(
+    readNumber(
+      rawIntegrations ?? source,
+      "protocolDefaultTtlMs",
+      readNumber(
+        source,
+        "integrationProtocolDefaultTtlMs",
+        DEFAULT_INTEGRATION_SETTINGS.protocolDefaultTtlMs,
+        PROTOCOL_TTL_MIN_MS,
+        PROTOCOL_TTL_MAX_MS
+      ),
+      PROTOCOL_TTL_MIN_MS,
+      PROTOCOL_TTL_MAX_MS
+    )
+  );
+  const nativeEventReactionsEnabled = readBoolean(
+    rawIntegrations ?? source,
+    "nativeEventReactionsEnabled",
+    readBoolean(
+      source,
+      "nativeEventReactionsEnabled",
+      DEFAULT_INTEGRATION_SETTINGS.nativeEventReactionsEnabled
+    )
+  );
+  const nativeEventCooldownMs = Math.round(
+    readNumber(
+      rawIntegrations ?? source,
+      "nativeEventCooldownMs",
+      readNumber(
+        source,
+        "nativeEventCooldownMs",
+        DEFAULT_INTEGRATION_SETTINGS.nativeEventCooldownMs,
+        5000,
+        60000
+      ),
+      5000,
+      60000
+    )
+  );
+
+  const nativeSignals = Object.fromEntries(
+    NATIVE_OBSIDIAN_SIGNAL_KEYS.map((signal) => [
+      signal,
+      readBoolean(
+        rawNativeSignals ?? rawIntegrations ?? source,
+        signal,
+        readBoolean(
+          rawIntegrations ?? source,
+          legacyNativeSignalKey(signal),
+          DEFAULT_NATIVE_OBSIDIAN_SIGNAL_SETTINGS[signal]
+        )
+      )
+    ])
+  ) as NativeObsidianSignalSettings;
+
+  return {
+    apiEnabled,
+    protocolHandlerEnabled,
+    protocolSayMaxLength,
+    protocolDefaultTtlMs,
+    nativeEventReactionsEnabled,
+    nativeEventCooldownMs,
+    nativeSignals
+  };
+}
+
+function legacyNativeSignalKey(signal: NativeObsidianSignalKey): string {
+  return `nativeSignal${signal
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("")}Enabled`;
+}
+
 export function normalizePetsidianSettings(raw: unknown): PetsidianSettings {
   if (!isRecord(raw)) {
     return {
       ...DEFAULT_SETTINGS,
       clickActionPool: [...DEFAULT_SETTINGS.clickActionPool],
       importedPets: [],
-      windowPosition: null
+      windowPosition: null,
+      integrations: { ...DEFAULT_INTEGRATION_SETTINGS }
     };
   }
 
@@ -263,7 +433,7 @@ export function normalizePetsidianSettings(raw: unknown): PetsidianSettings {
     language: readLanguage(raw),
     scale: readNumber(raw, "scale", DEFAULT_SETTINGS.scale, 0.5, 2),
     reducedMotion: readBoolean(raw, "reducedMotion", DEFAULT_SETTINGS.reducedMotion),
-    activePetId: readActivePetId(raw, catalog),
+    activePetId: readActivePetId(raw, importedPets, catalog),
     clickActionMode: readClickActionMode(raw),
     clickAction,
     clickActionPool: readActionPool(raw),
@@ -298,12 +468,78 @@ export function normalizePetsidianSettings(raw: unknown): PetsidianSettings {
     alwaysOnTop: readBoolean(raw, "alwaysOnTop", DEFAULT_SETTINGS.alwaysOnTop),
     skipTaskbar: readBoolean(raw, "skipTaskbar", DEFAULT_SETTINGS.skipTaskbar),
     importedPets,
-    windowPosition: readWindowPosition(raw)
+    windowPosition: readWindowPosition(raw),
+    integrations: readIntegrations(raw)
+  };
+}
+
+function serializeImportedPetRecord(pet: ImportedPetRecord): ImportedPetRecord {
+  const normalized = normalizeImportedPet(pet);
+  if (normalized === null) {
+    throw new Error(`Cannot serialize invalid imported pet record: ${pet.id}`);
+  }
+
+  if (normalized.spritesheetStoragePath) {
+    return {
+      id: normalized.id,
+      displayName: normalized.displayName,
+      description: normalized.description,
+      spritesheetStoragePath: normalized.spritesheetStoragePath,
+      sourceName: normalized.sourceName ?? null,
+      sourceUrl: normalized.sourceUrl ?? null
+    };
+  }
+
+  return {
+    id: normalized.id,
+    displayName: normalized.displayName,
+    description: normalized.description,
+    spritesheetDataUrl: normalized.spritesheetDataUrl ?? null,
+    sourceName: normalized.sourceName ?? null,
+    sourceUrl: normalized.sourceUrl ?? null
+  };
+}
+
+export function serializePetsidianSettings(settings: PetsidianSettings): PetsidianSettings {
+  return {
+    ...settings,
+    clickActionPool: [...settings.clickActionPool],
+    importedPets: settings.importedPets
+      .filter((pet) => pet.spritesheetStoragePath || hasImportedPetSpritesheetData(pet))
+      .map(serializeImportedPetRecord),
+    windowPosition:
+      settings.windowPosition === null
+        ? null
+        : {
+            x: settings.windowPosition.x,
+            y: settings.windowPosition.y
+          },
+    integrations: {
+      ...settings.integrations,
+      nativeSignals: { ...settings.integrations.nativeSignals }
+    }
   };
 }
 
 export function getAvailableActions(): readonly PetActionAnimationId[] {
   return PET_ACTION_ANIMATION_IDS;
+}
+
+export function mergeIntegrationSettings(
+  current: PetsidianIntegrationSettings,
+  partial: PartialPetsidianIntegrationSettings
+): PetsidianIntegrationSettings {
+  return {
+    ...current,
+    ...partial,
+    nativeSignals:
+      partial.nativeSignals === undefined
+        ? { ...current.nativeSignals }
+        : {
+            ...current.nativeSignals,
+            ...partial.nativeSignals
+          }
+  };
 }
 
 export function getAvailableIdleActions(): readonly IdleActionId[] {

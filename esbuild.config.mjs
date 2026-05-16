@@ -63,17 +63,24 @@ const context = await esbuild.context({
   banner: {
     js: "/* Petsidian - Obsidian native plugin */"
   },
-  entryPoints: ["src/main.ts"],
+  entryPoints: {
+    main: "src/main.ts",
+    "desktop-pet-preload": "src/desktop-pet-preload.ts"
+  },
   bundle: true,
   external,
+  entryNames: "[name]",
   format: "cjs",
+  loader: {
+    ".webp": "dataurl"
+  },
   target: "es2018",
   logLevel: "info",
   minify: production,
   plugins: [copyStaticArtifactsPlugin],
   sourcemap: production ? false : "inline",
   treeShaking: true,
-  outfile: resolve(distDir, "main.js")
+  outdir: distDir
 });
 
 if (watch) {

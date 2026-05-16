@@ -1,3 +1,4 @@
+import { PET_ATLAS } from "./animation";
 import { resolveRuntimeRequire } from "../electron-runtime";
 import type { ImportedPetRecord } from "./catalog";
 
@@ -23,6 +24,14 @@ const MAX_HTML_BYTES = 2 * 1024 * 1024;
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_SPRITESHEET_BYTES = 10 * 1024 * 1024;
 const WEBP_DATA_URL_PREFIX = "data:image/webp;base64,";
+const STATIC_ATLAS_PADDING_PX = 12;
+const SUPPORTED_STATIC_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
+
+type SupportedImageMimeType =
+  | "image/webp"
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif";
 
 type FsPromisesModule = {
   readFile: (path: string) => Promise<Uint8Array>;
@@ -286,10 +295,142 @@ function bufferToWebpDataUrl(bytes: Uint8Array): string {
   return `${WEBP_DATA_URL_PREFIX}${getBufferModule().Buffer.from(bytes).toString("base64")}`;
 }
 
+function bufferToDataUrl(bytes: Uint8Array, mimeType: SupportedImageMimeType): string {
+  return `data:${mimeType};base64,${getBufferModule().Buffer.from(bytes).toString("base64")}`;
+}
+
+function detectSupportedImageMimeType(bytes: Uint8Array): SupportedImageMimeType | null {
+  if (
+    bytes.byteLength >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+
+  if (
+    bytes.byteLength >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+
+  if (bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+
+  if (bytes.byteLength >= 6) {
+    const header = String.fromCharCode(...bytes.slice(0, 6));
+    if (header === "GIF87a" || header === "GIF89a") {
+      return "image/gif";
+    }
+  }
+
+  return null;
+}
+
+async function loadImageElement(
+  bytes: Uint8Array,
+  mimeType: SupportedImageMimeType
+): Promise<HTMLImageElement> {
+  const image = new Image();
+  const dataUrl = bufferToDataUrl(bytes, mimeType);
+  return new Promise((resolvePromise, rejectPromise) => {
+    image.onload = () => resolvePromise(image);
+    image.onerror = () => {
+      rejectPromise(new Error("Could not decode the selected image."));
+    };
+    image.src = dataUrl;
+  });
+}
+
+async function convertStaticImageToAtlasDataUrl(
+  bytes: Uint8Array,
+  mimeType: SupportedImageMimeType
+): Promise<string> {
+  const image = await loadImageElement(bytes, mimeType);
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  if (sourceWidth <= 0 || sourceHeight <= 0) {
+    throw new Error("Could not read the selected image size.");
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = PET_ATLAS.width;
+  canvas.height = PET_ATLAS.height;
+  const context = canvas.getContext("2d");
+  if (context === null) {
+    throw new Error("Petsidian could not create a canvas for static image import.");
+  }
+
+  const maxWidth = PET_ATLAS.cellWidth - STATIC_ATLAS_PADDING_PX * 2;
+  const maxHeight = PET_ATLAS.cellHeight - STATIC_ATLAS_PADDING_PX * 2;
+  const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight);
+  const drawWidth = Math.max(1, Math.round(sourceWidth * scale));
+  const drawHeight = Math.max(1, Math.round(sourceHeight * scale));
+
+  for (let row = 0; row < PET_ATLAS.rows; row += 1) {
+    for (let column = 0; column < PET_ATLAS.columns; column += 1) {
+      const cellX = column * PET_ATLAS.cellWidth;
+      const cellY = row * PET_ATLAS.cellHeight;
+      const drawX = cellX + Math.round((PET_ATLAS.cellWidth - drawWidth) / 2);
+      const drawY = cellY + Math.round((PET_ATLAS.cellHeight - drawHeight) / 2);
+      context.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+    }
+  }
+
+  const atlasDataUrl = canvas.toDataURL("image/webp", 0.92);
+  if (!atlasDataUrl.startsWith(WEBP_DATA_URL_PREFIX)) {
+    throw new Error("Petsidian could not encode the static image as a WebP atlas.");
+  }
+  return atlasDataUrl;
+}
+
+async function createLocalSpritesheetDataUrl(pathValue: string): Promise<string> {
+  const { bytes, mimeType } = await readLocalImageBytes(pathValue);
+
+  if (mimeType === "image/webp") {
+    const decoded = await loadImageElement(bytes, mimeType);
+    const width = decoded.naturalWidth || decoded.width;
+    const height = decoded.naturalHeight || decoded.height;
+    if (width === PET_ATLAS.width && height === PET_ATLAS.height) {
+      return bufferToWebpDataUrl(bytes);
+    }
+  }
+
+  return convertStaticImageToAtlasDataUrl(bytes, mimeType);
+}
+
 function isSafeRelativePath(baseDir: string, targetPath: string): boolean {
   const path = getPathModule();
   const relative = path.relative(baseDir, targetPath);
   return relative.length > 0 && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative);
+}
+
+async function resolvePackageSpritesheetPath(
+  packageDir: string,
+  rawSpritesheetPath: string
+): Promise<string> {
+  const fs = getFsPromises();
+  const path = getPathModule();
+  const resolvedPath = path.resolve(packageDir, rawSpritesheetPath);
+  if (!isSafeRelativePath(packageDir, resolvedPath)) {
+    throw new Error("spritesheetPath must stay inside the package directory.");
+  }
+
+  const canonicalPath = await fs.realpath(resolvedPath);
+  if (!isSafeRelativePath(packageDir, canonicalPath)) {
+    throw new Error("spritesheetPath must stay inside the package directory.");
+  }
+
+  return canonicalPath;
 }
 
 async function resolveLocalImportSource(sourceInput: string): Promise<ImportedPetRecord> {
@@ -312,48 +453,46 @@ async function resolveLocalImportSource(sourceInput: string): Promise<ImportedPe
     const parsedManifest = JSON.parse(await fetchLocalText(manifestPath)) as LocalPetManifest;
     manifest = parsedManifest;
     const manifestSpritesheetPath = toTrimmedString(parsedManifest.spritesheetPath) ?? "spritesheet.webp";
-    const candidate = await fs.realpath(path.join(packageDir, manifestSpritesheetPath));
-    if (!isSafeRelativePath(packageDir, candidate) && candidate !== path.join(packageDir, manifestSpritesheetPath)) {
-      throw new Error("spritesheetPath must stay inside the package directory.");
-    }
-    spritesheetPath = candidate;
+    spritesheetPath = await resolvePackageSpritesheetPath(packageDir, manifestSpritesheetPath);
   } else if (sourceStat.isFile() && path.basename(canonicalSource).toLowerCase() === "pet.json") {
     packageDir = path.dirname(canonicalSource);
     const parsedManifest = JSON.parse(await fetchLocalText(canonicalSource)) as LocalPetManifest;
     manifest = parsedManifest;
     const manifestSpritesheetPath = toTrimmedString(parsedManifest.spritesheetPath) ?? "spritesheet.webp";
-    const candidate = await fs.realpath(path.join(packageDir, manifestSpritesheetPath));
-    if (!isSafeRelativePath(packageDir, candidate) && candidate !== path.join(packageDir, manifestSpritesheetPath)) {
-      throw new Error("spritesheetPath must stay inside the package directory.");
-    }
-    spritesheetPath = candidate;
+    spritesheetPath = await resolvePackageSpritesheetPath(packageDir, manifestSpritesheetPath);
   } else if (sourceStat.isFile()) {
     spritesheetPath = canonicalSource;
   } else {
-    throw new Error("Source path must be a package directory, pet.json, or spritesheet.webp.");
+    throw new Error("Source path must be a package directory, pet.json, or supported image file.");
   }
 
-  if (spritesheetPath === null || path.extname(spritesheetPath).toLowerCase() !== ".webp") {
-    throw new Error("Current Petsidian imports require a .webp spritesheet.");
+  if (spritesheetPath === null) {
+    throw new Error("Could not resolve an image file to import.");
   }
 
-  const spritesheetBytes = await readLocalWebp(spritesheetPath);
+  const extension = path.extname(spritesheetPath).toLowerCase();
+  if (!SUPPORTED_STATIC_IMAGE_EXTENSIONS.has(extension)) {
+    throw new Error(
+      "Current Petsidian local imports support Codex pet .webp atlases and static .png/.jpg/.jpeg/.gif/.webp images."
+    );
+  }
+
   const idHint =
     toTrimmedString(manifest?.id) ??
     (packageDir ? path.basename(packageDir) : null) ??
-    path.basename(spritesheetPath, ".webp");
+    path.basename(spritesheetPath, extension);
   const displayName =
     toTrimmedString(manifest?.displayName) ??
     humanizePetLabel(idHint);
   const description =
     toTrimmedString(manifest?.description) ??
-    "Imported local pet.";
+    (extension === ".webp" ? "Imported local pet." : "Imported local static image pet.");
 
   return {
     id: sanitizePetId(idHint),
     displayName: truncateChars(displayName, 96),
     description: truncateChars(description, 280),
-    spritesheetDataUrl: bufferToWebpDataUrl(spritesheetBytes),
+    spritesheetDataUrl: await createLocalSpritesheetDataUrl(spritesheetPath),
     sourceName: toTrimmedString(manifest?.sourceName) ?? "Local",
     sourceUrl: toTrimmedString(manifest?.sourceUrl)
   };
@@ -365,15 +504,23 @@ async function fetchLocalText(pathValue: string): Promise<string> {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-async function readLocalWebp(pathValue: string): Promise<Uint8Array> {
+async function readLocalImageBytes(
+  pathValue: string
+): Promise<{ bytes: Uint8Array; mimeType: SupportedImageMimeType }> {
   const fs = getFsPromises();
   const stats = await fs.stat(pathValue);
   if (stats.size > MAX_SPRITESHEET_BYTES) {
-    throw new Error(`Spritesheet is larger than ${Math.floor(MAX_SPRITESHEET_BYTES / 1024 / 1024)} MB.`);
+    throw new Error(`Image file is larger than ${Math.floor(MAX_SPRITESHEET_BYTES / 1024 / 1024)} MB.`);
   }
   const bytes = await fs.readFile(pathValue);
-  validateWebp(bytes);
-  return bytes;
+  const mimeType = detectSupportedImageMimeType(bytes);
+  if (mimeType === null) {
+    throw new Error("Unsupported image file. Use .webp, .png, .jpg, .jpeg, or .gif.");
+  }
+  return {
+    bytes,
+    mimeType
+  };
 }
 
 function extractMetaContent(html: string, nameOrProperty: string): string | null {

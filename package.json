@@ -1,9 +1,10 @@
 {
   "name": "petsidian",
   "version": "0.1.0",
-  "description": "A desktop-only detached pet companion plugin for Obsidian.",
+  "description": "A desktop-only detached pet companion hosted by Obsidian.",
   "main": "dist/main.js",
   "type": "module",
+  "packageManager": "pnpm@10.32.1",
   "scripts": {
     "dev": "node esbuild.config.mjs --watch",
     "build": "pnpm typecheck && node esbuild.config.mjs production",
@@ -22,6 +23,14 @@
   ],
   "author": "X-T-E-R",
   "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/X-T-E-R/Petsidian.git"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/Petsidian/issues"
+  },
+  "homepage": "https://github.com/X-T-E-R/Petsidian#readme",
   "devDependencies": {
     "@types/node": "^24.0.0",
     "builtin-modules": "^5.0.0",

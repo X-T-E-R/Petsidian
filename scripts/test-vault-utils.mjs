@@ -21,6 +21,7 @@ export const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 export const pluginId = String(manifest.id);
 export const requiredDistFiles = [
   resolve(distDir, "main.js"),
+  resolve(distDir, "desktop-pet-preload.js"),
   resolve(distDir, "manifest.json"),
   resolve(distDir, "styles.css")
 ];

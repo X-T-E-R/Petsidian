@@ -1,0 +1,106 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release metadata
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const versions = JSON.parse(fs.readFileSync("versions.json", "utf8"));
+          const tag = process.env.GITHUB_REF_NAME;
+
+          if (!/^\d+\.\d+\.\d+$/.test(tag)) {
+            throw new Error(`Release tag must use x.y.z format, got: ${tag}`);
+          }
+
+          if (manifest.version !== tag) {
+            throw new Error(`manifest.json version ${manifest.version} does not match tag ${tag}`);
+          }
+
+          if (pkg.version !== manifest.version) {
+            throw new Error(`package.json version ${pkg.version} does not match manifest.json version ${manifest.version}`);
+          }
+
+          if (versions[manifest.version] !== manifest.minAppVersion) {
+            throw new Error(
+              `versions.json must map ${manifest.version} to ${manifest.minAppVersion}, got ${versions[manifest.version]}`
+            );
+          }
+
+          if (manifest.isDesktopOnly !== true) {
+            throw new Error("manifest.json must keep isDesktopOnly=true for this Electron-based plugin");
+          }
+
+          if (typeof manifest.description !== "string" || manifest.description.length > 250 || !manifest.description.endsWith(".")) {
+            throw new Error("manifest.json description must stay short, end with a period, and fit Obsidian submission rules");
+          }
+          NODE
+
+      - name: Build plugin
+        run: pnpm build
+
+      - name: Stage release assets
+        shell: bash
+        run: |
+          rm -rf release
+          mkdir -p release/manual/petsidian
+          cp dist/main.js release/main.js
+          cp dist/desktop-pet-preload.js release/desktop-pet-preload.js
+          cp dist/manifest.json release/manifest.json
+          if [ -f dist/styles.css ]; then cp dist/styles.css release/styles.css; fi
+          if [ -f dist/versions.json ]; then cp dist/versions.json release/versions.json; fi
+          cp LICENSE release/manual/petsidian/LICENSE
+          cp README.md release/manual/petsidian/README.md
+          cp release/main.js release/manual/petsidian/main.js
+          cp release/desktop-pet-preload.js release/manual/petsidian/desktop-pet-preload.js
+          cp release/manifest.json release/manual/petsidian/manifest.json
+          if [ -f release/styles.css ]; then cp release/styles.css release/manual/petsidian/styles.css; fi
+          if [ -f release/versions.json ]; then cp release/versions.json release/manual/petsidian/versions.json; fi
+          cd release/manual
+          zip -r "../petsidian-${GITHUB_REF_NAME}-manual-install.zip" petsidian
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release/main.js
+            release/desktop-pet-preload.js
+            release/manifest.json
+            release/styles.css
+            release/versions.json
+            release/petsidian-${{ github.ref_name }}-manual-install.zip

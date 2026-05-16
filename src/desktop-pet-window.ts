@@ -7,6 +7,7 @@ import {
 } from "./pet/animation";
 import { getCatalogPet, type PetCatalogItem } from "./pet/catalog";
 import type { PetsidianSettings } from "./pet/settings";
+import { PET_UI_STRINGS_BY_LANGUAGE } from "./pet/ui-text";
 import {
   resolveElectronRuntime,
   type BrowserWindowLike,
@@ -20,6 +21,7 @@ type DesktopPetWindowOptions = {
   getCatalog: () => readonly PetCatalogItem[];
   onOpenSettings: () => void;
   onUpdateSettings: (partial: Partial<PetsidianSettings>) => Promise<void>;
+  preloadScriptPath: string | null;
 };
 
 type RendererSnapshot = {
@@ -42,8 +44,21 @@ type RendererDragState = {
   startScreenY: number;
   latestScreenX: number;
   latestScreenY: number;
+  nativeWindowMove: boolean;
   started: boolean;
   ended: boolean;
+};
+
+type RendererRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type RendererInteractiveRegions = {
+  pet: RendererRect | null;
+  contextMenu: RendererRect | null;
 };
 
 type RendererHostState = {
@@ -51,6 +66,7 @@ type RendererHostState = {
   drag: RendererDragState | null;
   hovered: boolean;
   contextMenuOpen: boolean;
+  interactiveRegions: RendererInteractiveRegions;
 };
 
 type DragSession = {
@@ -58,12 +74,16 @@ type DragSession = {
   startScreenY: number;
   startWindowX: number;
   startWindowY: number;
+  nativeWindowMove: boolean;
 };
 
-const PET_WINDOW_MARGIN_PX = 24;
-const PET_WINDOW_BUBBLE_SPACE_PX = 96;
+const PET_WINDOW_MARGIN_PX = 8;
+const PET_WINDOW_BUBBLE_SPACE_PX = 140;
+const PET_WINDOW_SURFACE_EXTRA_WIDTH_PX = 88;
+const PET_WINDOW_EDGE_MARGIN_PX = 6;
 const WALK_INTERVAL_MS = 50;
 const BRIDGE_POLL_MS = 33;
+const POINTER_HIT_SLOP_PX = 4;
 
 function getPrimaryWorkArea(screen: ScreenLike | undefined): WorkArea {
   if (screen === undefined) {
@@ -77,11 +97,73 @@ function getPrimaryWorkArea(screen: ScreenLike | undefined): WorkArea {
   return screen.getPrimaryDisplay().workArea;
 }
 
+function getDisplayWorkAreaForBounds(
+  screen: ScreenLike | undefined,
+  bounds: WorkArea
+): WorkArea {
+  if (screen === undefined) {
+    return getPrimaryWorkArea(undefined);
+  }
+  if (typeof screen.getDisplayMatching === "function") {
+    return screen.getDisplayMatching(bounds).workArea;
+  }
+  if (typeof screen.getDisplayNearestPoint === "function") {
+    return screen.getDisplayNearestPoint({
+      x: Math.round(bounds.x + bounds.width / 2),
+      y: Math.round(bounds.y + bounds.height / 2)
+    }).workArea;
+  }
+  return screen.getPrimaryDisplay().workArea;
+}
+
 function getWindowSize(settings: PetsidianSettings): { width: number; height: number } {
   const spriteSize = getPetSpriteSize(settings.scale);
   return {
-    width: Math.max(spriteSize.width + 32, 280),
+    width: Math.max(spriteSize.width + 24, spriteSize.width + PET_WINDOW_SURFACE_EXTRA_WIDTH_PX),
     height: spriteSize.height + PET_WINDOW_BUBBLE_SPACE_PX
+  };
+}
+
+function getEstimatedPetRect(
+  settings: PetsidianSettings,
+  windowSize: { width: number; height: number }
+): RendererRect {
+  const spriteSize = getPetSpriteSize(settings.scale);
+  return {
+    x: Math.max(0, Math.round((windowSize.width - spriteSize.width) / 2)),
+    y: Math.max(0, windowSize.height - spriteSize.height - 12),
+    width: spriteSize.width,
+    height: spriteSize.height
+  };
+}
+
+function getPetRectForWindow(
+  settings: PetsidianSettings,
+  windowSize: { width: number; height: number },
+  interactiveRegions: RendererInteractiveRegions
+): RendererRect {
+  return interactiveRegions.pet ?? getEstimatedPetRect(settings, windowSize);
+}
+
+function clampWindowPositionToPetRect(
+  position: { x: number; y: number },
+  petRect: RendererRect,
+  workArea: WorkArea
+): { x: number; y: number } {
+  const minX = workArea.x + PET_WINDOW_EDGE_MARGIN_PX - petRect.x;
+  const minY = workArea.y + PET_WINDOW_EDGE_MARGIN_PX - petRect.y;
+  const maxX = Math.max(
+    minX,
+    workArea.x + workArea.width - PET_WINDOW_EDGE_MARGIN_PX - (petRect.x + petRect.width)
+  );
+  const maxY = Math.max(
+    minY,
+    workArea.y + workArea.height - PET_WINDOW_EDGE_MARGIN_PX - (petRect.y + petRect.height)
+  );
+
+  return {
+    x: Math.min(Math.max(position.x, minX), maxX),
+    y: Math.min(Math.max(position.y, minY), maxY)
   };
 }
 
@@ -162,6 +244,7 @@ function buildRendererHtml(): string {
         margin: 0;
         overflow: hidden;
         background: transparent;
+        pointer-events: none;
       }
 
       body {
@@ -180,6 +263,7 @@ function buildRendererHtml(): string {
         padding: 12px 8px;
         box-sizing: border-box;
         background: transparent;
+        pointer-events: none;
       }
 
       #bubble {
@@ -231,13 +315,15 @@ function buildRendererHtml(): string {
         margin: 0;
         padding: 0;
         border: 0;
-        border-radius: 999px;
-        background-color: transparent;
+        border-radius: 0;
+        appearance: none;
+        background-color: rgba(0, 0, 0, 0.001);
         background-repeat: no-repeat;
         background-size: ${PET_ATLAS.width * renderScale}px ${PET_ATLAS.height * renderScale}px;
         cursor: grab;
         filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.22));
         transition: transform 160ms ease;
+        pointer-events: auto;
       }
 
       #pet:hover, #pet:focus-visible {
@@ -307,24 +393,7 @@ function buildRendererHtml(): string {
       (() => {
         "use strict";
 
-        const TRANSLATIONS = {
-          en: {
-            openSettings: "Open settings",
-            wave: "Wave",
-            pauseWalking: "Pause walking",
-            roam: "Let me roam",
-            hidePet: "Hide pet",
-            clickBubble: "Hi from Petsidian!"
-          },
-          "zh-CN": {
-            openSettings: "打开设置",
-            wave: "挥手",
-            pauseWalking: "暂停移动",
-            roam: "自由移动",
-            hidePet: "隐藏宠物",
-            clickBubble: "Petsidian 来啦！"
-          }
-        };
+        const TRANSLATIONS = ${toExecutableLiteral(PET_UI_STRINGS_BY_LANGUAGE)};
 
         const state = {
           atlas: ${toExecutableLiteral(PET_ATLAS)},
@@ -347,6 +416,8 @@ function buildRendererHtml(): string {
           hovered: false,
           contextMenuOpen: false
         };
+
+        let nativeDragSession = null;
 
         let activeAnimationId = "idle";
         let animationStartedAtMs = performance.now();
@@ -379,6 +450,23 @@ function buildRendererHtml(): string {
 
         function queueCommand(command) {
           hostState.commands.push(command);
+        }
+
+        function readRect(element) {
+          if (!element) return null;
+          const rect = element.getBoundingClientRect();
+          if (!Number.isFinite(rect.x) || !Number.isFinite(rect.y) || !Number.isFinite(rect.width) || !Number.isFinite(rect.height)) {
+            return null;
+          }
+          if (rect.width <= 0 || rect.height <= 0) {
+            return null;
+          }
+          return {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height
+          };
         }
 
         function markActivity() {
@@ -425,6 +513,7 @@ function buildRendererHtml(): string {
 
         function applyContextMenuLabels() {
           const strings = getLanguageStrings();
+          contextMenu.setAttribute("aria-label", strings.contextMenuAria);
           const menuLabels = {
             "open-settings": strings.openSettings,
             wave: strings.wave,
@@ -519,6 +608,121 @@ function buildRendererHtml(): string {
           document.title = "Petsidian Desktop Pet";
         }
 
+        function getFallbackWorkArea() {
+          return {
+            x: 0,
+            y: 0,
+            width: window.screen.availWidth || 1280,
+            height: window.screen.availHeight || 720
+          };
+        }
+
+        let nativeWindowBridgeCache;
+        function resolveNativeWindowBridge() {
+          if (nativeWindowBridgeCache !== undefined) {
+            return nativeWindowBridgeCache;
+          }
+
+          nativeWindowBridgeCache = null;
+
+          try {
+            const bridge = window.PetsidianNativeWindowBridge;
+            if (
+              !bridge ||
+              typeof bridge.getWindowPosition !== "function" ||
+              typeof bridge.setWindowPosition !== "function" ||
+              typeof bridge.getWorkAreaForPoint !== "function" ||
+              typeof bridge.getWorkAreaForBounds !== "function"
+            ) {
+              return nativeWindowBridgeCache;
+            }
+
+            nativeWindowBridgeCache = {
+              getWindowPosition: bridge.getWindowPosition.bind(bridge),
+              setWindowPosition: bridge.setWindowPosition.bind(bridge),
+              getWorkAreaForPoint: bridge.getWorkAreaForPoint.bind(bridge),
+              getWorkAreaForBounds: bridge.getWorkAreaForBounds.bind(bridge)
+            };
+          } catch (error) {
+            void error;
+          }
+
+          return nativeWindowBridgeCache;
+        }
+
+        function getWorkAreaForDrag(screenApi, pointerPoint, nextWindowPosition) {
+          if (screenApi) {
+            if (
+              pointerPoint &&
+              typeof screenApi.getWorkAreaForPoint === "function"
+            ) {
+              const workArea = screenApi.getWorkAreaForPoint(pointerPoint);
+              if (workArea) {
+                return workArea;
+              }
+            }
+
+            if (typeof screenApi.getWorkAreaForBounds === "function") {
+              const petRect = readRect(petButton);
+              if (petRect) {
+                const workArea = screenApi.getWorkAreaForBounds({
+                  x: Math.round(nextWindowPosition.x + petRect.x),
+                  y: Math.round(nextWindowPosition.y + petRect.y),
+                  width: Math.round(petRect.width),
+                  height: Math.round(petRect.height)
+                });
+                if (workArea) {
+                  return workArea;
+                }
+              }
+            }
+          }
+
+          return getFallbackWorkArea();
+        }
+
+        function updateNativeWindowDrag(drag) {
+          if (!nativeDragSession) {
+            return false;
+          }
+
+          const bridge = resolveNativeWindowBridge();
+          if (!bridge) {
+            return false;
+          }
+
+          const nextWindowPosition = {
+            x: nativeDragSession.startWindowX + (drag.latestScreenX - drag.startScreenX),
+            y: nativeDragSession.startWindowY + (drag.latestScreenY - drag.startScreenY)
+          };
+          const petRect = readRect(petButton);
+          const workArea = getWorkAreaForDrag(
+            bridge.screen,
+            { x: drag.latestScreenX, y: drag.latestScreenY },
+            nextWindowPosition
+          );
+
+          if (petRect) {
+            const minX = workArea.x + ${PET_WINDOW_EDGE_MARGIN_PX} - petRect.x;
+            const minY = workArea.y + ${PET_WINDOW_EDGE_MARGIN_PX} - petRect.y;
+            const maxX = Math.max(
+              minX,
+              workArea.x + workArea.width - ${PET_WINDOW_EDGE_MARGIN_PX} - (petRect.x + petRect.width)
+            );
+            const maxY = Math.max(
+              minY,
+              workArea.y + workArea.height - ${PET_WINDOW_EDGE_MARGIN_PX} - (petRect.y + petRect.height)
+            );
+            nextWindowPosition.x = Math.min(Math.max(nextWindowPosition.x, minX), maxX);
+            nextWindowPosition.y = Math.min(Math.max(nextWindowPosition.y, minY), maxY);
+          }
+
+          return bridge.setWindowPosition(
+            Math.round(nextWindowPosition.x),
+            Math.round(nextWindowPosition.y)
+          );
+        }
+
         function openContextMenu(screenX, screenY) {
           const menuWidth = 196;
           const menuHeight = 176;
@@ -545,12 +749,24 @@ function buildRendererHtml(): string {
           if (event.button !== 0) return;
           markActivity();
           closeContextMenu();
+          const nativeWindowBridge = resolveNativeWindowBridge();
+          nativeDragSession = null;
+          if (nativeWindowBridge) {
+            const startWindowPosition = nativeWindowBridge.getWindowPosition();
+            if (startWindowPosition) {
+              nativeDragSession = {
+                startWindowX: startWindowPosition.x,
+                startWindowY: startWindowPosition.y
+              };
+            }
+          }
           hostState.drag = {
             active: true,
             startScreenX: event.screenX,
             startScreenY: event.screenY,
             latestScreenX: event.screenX,
             latestScreenY: event.screenY,
+            nativeWindowMove: nativeDragSession !== null,
             started: false,
             ended: false
           };
@@ -571,21 +787,36 @@ function buildRendererHtml(): string {
               suppressClick = true;
             }
           }
+          if (drag.started && drag.nativeWindowMove) {
+            updateNativeWindowDrag(drag);
+          }
         });
 
-        function endDrag() {
+        function endDrag(event) {
           if (hostState.drag) {
+            if (hostState.drag.started && hostState.drag.nativeWindowMove) {
+              updateNativeWindowDrag(hostState.drag);
+            }
             hostState.drag.ended = true;
           }
+          if (
+            event &&
+            typeof event.pointerId === "number" &&
+            typeof petButton.hasPointerCapture === "function" &&
+            petButton.hasPointerCapture(event.pointerId)
+          ) {
+            petButton.releasePointerCapture?.(event.pointerId);
+          }
+          nativeDragSession = null;
           petButton.classList.remove("dragging");
         }
 
-        petButton.addEventListener("pointerup", () => {
-          endDrag();
+        petButton.addEventListener("pointerup", (event) => {
+          endDrag(event);
         });
 
-        petButton.addEventListener("pointercancel", () => {
-          endDrag();
+        petButton.addEventListener("pointercancel", (event) => {
+          endDrag(event);
         });
 
         petButton.addEventListener("click", () => {
@@ -639,7 +870,11 @@ function buildRendererHtml(): string {
               commands: hostState.commands.splice(0),
               drag: hostState.drag ? { ...hostState.drag } : null,
               hovered: hostState.hovered,
-              contextMenuOpen: hostState.contextMenuOpen
+              contextMenuOpen: hostState.contextMenuOpen,
+              interactiveRegions: {
+                pet: readRect(petButton),
+                contextMenu: hostState.contextMenuOpen ? readRect(contextMenu) : null
+              }
             };
             if (hostState.drag && hostState.drag.ended) {
               hostState.drag = null;
@@ -689,7 +924,12 @@ function readRendererDragState(value: unknown): RendererDragState | null {
   ) {
     return null;
   }
-  if (typeof value.active !== "boolean" || typeof value.started !== "boolean" || typeof value.ended !== "boolean") {
+  if (
+    typeof value.active !== "boolean" ||
+    typeof value.nativeWindowMove !== "boolean" ||
+    typeof value.started !== "boolean" ||
+    typeof value.ended !== "boolean"
+  ) {
     return null;
   }
   return {
@@ -698,8 +938,42 @@ function readRendererDragState(value: unknown): RendererDragState | null {
     startScreenY,
     latestScreenX,
     latestScreenY,
+    nativeWindowMove: value.nativeWindowMove,
     started: value.started,
     ended: value.ended
+  };
+}
+
+function readRendererRect(value: unknown): RendererRect | null {
+  if (!isRecord(value)) return null;
+  const { x, y, width, height } = value;
+  if (
+    typeof x !== "number" ||
+    !Number.isFinite(x) ||
+    typeof y !== "number" ||
+    !Number.isFinite(y) ||
+    typeof width !== "number" ||
+    !Number.isFinite(width) ||
+    typeof height !== "number" ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+  return { x, y, width, height };
+}
+
+function readRendererInteractiveRegions(value: unknown): RendererInteractiveRegions {
+  if (!isRecord(value)) {
+    return {
+      pet: null,
+      contextMenu: null
+    };
+  }
+  return {
+    pet: readRendererRect(value.pet),
+    contextMenu: readRendererRect(value.contextMenu)
   };
 }
 
@@ -713,8 +987,18 @@ function readRendererHostState(value: unknown): RendererHostState | null {
     commands,
     drag: readRendererDragState(value.drag),
     hovered: value.hovered,
-    contextMenuOpen: value.contextMenuOpen
+    contextMenuOpen: value.contextMenuOpen,
+    interactiveRegions: readRendererInteractiveRegions(value.interactiveRegions)
   };
+}
+
+function isPointInRect(point: { x: number; y: number }, rect: RendererRect): boolean {
+  return (
+    point.x >= rect.x - POINTER_HIT_SLOP_PX &&
+    point.x <= rect.x + rect.width + POINTER_HIT_SLOP_PX &&
+    point.y >= rect.y - POINTER_HIT_SLOP_PX &&
+    point.y <= rect.y + rect.height + POINTER_HIT_SLOP_PX
+  );
 }
 
 export class DesktopPetWindow {
@@ -727,8 +1011,13 @@ export class DesktopPetWindow {
   private walkingDirection = 1;
   private lastWalkTickMs = 0;
   private dragSession: DragSession | null = null;
+  private interactiveRegions: RendererInteractiveRegions = {
+    pet: null,
+    contextMenu: null
+  };
   private hovered = false;
   private contextMenuOpen = false;
+  private ignoreMouseEventsEnabled: boolean | null = null;
 
   constructor(options: DesktopPetWindowOptions) {
     this.options = options;
@@ -746,6 +1035,11 @@ export class DesktopPetWindow {
   hide(): void {
     this.stopWalking();
     this.stopBridgePolling();
+    this.interactiveRegions = {
+      pet: null,
+      contextMenu: null
+    };
+    this.ignoreMouseEventsEnabled = null;
     if (this.window !== null && !this.window.isDestroyed()) {
       this.window.hide();
     }
@@ -756,6 +1050,11 @@ export class DesktopPetWindow {
     this.stopBridgePolling();
     const petWindow = this.window;
     this.window = null;
+    this.interactiveRegions = {
+      pet: null,
+      contextMenu: null
+    };
+    this.ignoreMouseEventsEnabled = null;
     if (petWindow !== null && !petWindow.isDestroyed()) {
       petWindow.close();
       if (!petWindow.isDestroyed()) {
@@ -777,6 +1076,7 @@ export class DesktopPetWindow {
       "applySnapshot",
       buildRendererSnapshot(settings, this.options.getCatalog())
     );
+    this.updateNativePointerMode();
     this.updateWalkingState();
   }
 
@@ -802,6 +1102,19 @@ export class DesktopPetWindow {
     const workArea = getPrimaryWorkArea(this.runtime.screen);
     const size = getWindowSize(settings);
     const position = buildInitialPosition(settings, workArea);
+    const webPreferences =
+      this.options.preloadScriptPath === null
+        ? {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false
+          }
+        : {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false,
+            preload: this.options.preloadScriptPath
+          };
     const petWindow = new this.runtime.BrowserWindow({
       width: size.width,
       height: size.height,
@@ -817,11 +1130,9 @@ export class DesktopPetWindow {
       hasShadow: false,
       backgroundColor: "#00000000",
       title: "Petsidian Desktop Pet",
-      webPreferences: {
-        contextIsolation: false,
-        nodeIntegration: false,
-        sandbox: false
-      }
+      // Keep renderer Node access disabled. A tiny preload bridge exposes only
+      // the window-position helpers needed for smooth drag updates.
+      webPreferences
     });
 
     petWindow.once("closed", () => {
@@ -829,6 +1140,11 @@ export class DesktopPetWindow {
         this.window = null;
       }
       this.dragSession = null;
+      this.interactiveRegions = {
+        pet: null,
+        contextMenu: null
+      };
+      this.ignoreMouseEventsEnabled = null;
       this.stopWalking();
       this.stopBridgePolling();
     });
@@ -847,18 +1163,92 @@ export class DesktopPetWindow {
   private clampWindowToWorkArea(petWindow: BrowserWindowLike): void {
     const runtime = this.runtime;
     const [currentX, currentY] = petWindow.getPosition();
-    const workArea = getPrimaryWorkArea(runtime?.screen);
     const [width, height] = petWindow.getSize();
-    const minX = workArea.x;
-    const minY = workArea.y;
-    const maxX = Math.max(minX, workArea.x + workArea.width - width);
-    const maxY = Math.max(minY, workArea.y + workArea.height - height);
+    const settings = this.options.getSettings();
+    const petRect = getPetRectForWindow(settings, { width, height }, this.interactiveRegions);
+    const workArea = getDisplayWorkAreaForBounds(runtime?.screen, {
+      x: Math.round(currentX + petRect.x),
+      y: Math.round(currentY + petRect.y),
+      width: Math.round(petRect.width),
+      height: Math.round(petRect.height)
+    });
     const fallback = buildInitialPosition(this.options.getSettings(), workArea);
-    const nextX = Number.isFinite(currentX) ? Math.min(Math.max(currentX, minX), maxX) : fallback.x;
-    const nextY = Number.isFinite(currentY) ? Math.min(Math.max(currentY, minY), maxY) : fallback.y;
+    const clampedPosition = clampWindowPositionToPetRect(
+      {
+        x: Number.isFinite(currentX) ? currentX : fallback.x,
+        y: Number.isFinite(currentY) ? currentY : fallback.y
+      },
+      petRect,
+      workArea
+    );
+    const nextX = clampedPosition.x;
+    const nextY = clampedPosition.y;
     if (nextX !== currentX || nextY !== currentY) {
       petWindow.setPosition(Math.round(nextX), Math.round(nextY), false);
     }
+  }
+
+  private updateNativePointerMode(): void {
+    const petWindow = this.window;
+    const hostWindowFocused = this.runtime?.getCurrentWindow?.().isFocused?.();
+    const cursorPoint = this.runtime?.screen?.getCursorScreenPoint?.();
+    if (
+      petWindow === null ||
+      petWindow.isDestroyed() ||
+      typeof petWindow.setIgnoreMouseEvents !== "function" ||
+      cursorPoint === undefined
+    ) {
+      if (petWindow !== null && !petWindow.isDestroyed() && typeof petWindow.setIgnoreMouseEvents === "function") {
+        petWindow.setIgnoreMouseEvents(false);
+        this.ignoreMouseEventsEnabled = false;
+      } else {
+        this.ignoreMouseEventsEnabled = null;
+      }
+      return;
+    }
+
+    if (hostWindowFocused === false) {
+      if (this.ignoreMouseEventsEnabled !== false) {
+        petWindow.setIgnoreMouseEvents(false);
+        this.ignoreMouseEventsEnabled = false;
+      }
+      return;
+    }
+
+    const shouldIgnoreMouseEvents =
+      !this.contextMenuOpen &&
+      this.dragSession === null &&
+      !this.isCursorOverInteractiveRegion(cursorPoint);
+    if (this.ignoreMouseEventsEnabled === shouldIgnoreMouseEvents) {
+      return;
+    }
+
+    petWindow.setIgnoreMouseEvents(
+      shouldIgnoreMouseEvents,
+      shouldIgnoreMouseEvents ? { forward: true } : undefined
+    );
+    this.ignoreMouseEventsEnabled = shouldIgnoreMouseEvents;
+  }
+
+  private isCursorOverInteractiveRegion(cursorPoint: { x: number; y: number }): boolean {
+    const petWindow = this.window;
+    if (petWindow === null || petWindow.isDestroyed()) {
+      return false;
+    }
+
+    const [windowX, windowY] = petWindow.getPosition();
+    const translatedPoint = {
+      x: cursorPoint.x - windowX,
+      y: cursorPoint.y - windowY
+    };
+    const regions = this.interactiveRegions;
+    if (regions.pet === null && regions.contextMenu === null) {
+      return true;
+    }
+    return (
+      (regions.pet !== null && isPointInRect(translatedPoint, regions.pet)) ||
+      (regions.contextMenu !== null && isPointInRect(translatedPoint, regions.contextMenu))
+    );
   }
 
   private updateWalkingState(): void {
@@ -916,8 +1306,10 @@ export class DesktopPetWindow {
       if (hostState === null) return;
       this.hovered = hostState.hovered;
       this.contextMenuOpen = hostState.contextMenuOpen;
+      this.interactiveRegions = hostState.interactiveRegions;
       await this.handleRendererCommands(hostState.commands);
       await this.handleRendererDrag(hostState.drag);
+      this.updateNativePointerMode();
       this.updateWalkingState();
     } finally {
       this.bridgePolling = false;
@@ -967,15 +1359,29 @@ export class DesktopPetWindow {
         startScreenX: drag.startScreenX,
         startScreenY: drag.startScreenY,
         startWindowX,
-        startWindowY
+        startWindowY,
+        nativeWindowMove: drag.nativeWindowMove
       };
     }
 
-    if (drag.started) {
+    if (drag.started && !this.dragSession.nativeWindowMove) {
       const nextX = this.dragSession.startWindowX + (drag.latestScreenX - this.dragSession.startScreenX);
       const nextY = this.dragSession.startWindowY + (drag.latestScreenY - this.dragSession.startScreenY);
-      petWindow.setPosition(Math.round(nextX), Math.round(nextY), false);
-      this.clampWindowToWorkArea(petWindow);
+      const [width, height] = petWindow.getSize();
+      const settings = this.options.getSettings();
+      const petRect = getPetRectForWindow(settings, { width, height }, this.interactiveRegions);
+      const workArea = getDisplayWorkAreaForBounds(this.runtime?.screen, {
+        x: Math.round(nextX + petRect.x),
+        y: Math.round(nextY + petRect.y),
+        width: Math.round(petRect.width),
+        height: Math.round(petRect.height)
+      });
+      const clampedPosition = clampWindowPositionToPetRect(
+        { x: nextX, y: nextY },
+        petRect,
+        workArea
+      );
+      petWindow.setPosition(Math.round(clampedPosition.x), Math.round(clampedPosition.y), false);
     }
 
     if (drag.ended) {
@@ -1018,9 +1424,19 @@ export class DesktopPetWindow {
 
     const [width] = petWindow.getSize();
     const [currentX, currentY] = petWindow.getPosition();
-    const workArea = getPrimaryWorkArea(runtime?.screen);
-    const minX = workArea.x + PET_WINDOW_MARGIN_PX;
-    const maxX = Math.max(minX, workArea.x + workArea.width - width - PET_WINDOW_MARGIN_PX);
+    const [, height] = petWindow.getSize();
+    const petRect = getPetRectForWindow(settings, { width, height }, this.interactiveRegions);
+    const workArea = getDisplayWorkAreaForBounds(runtime?.screen, {
+      x: Math.round(currentX + petRect.x),
+      y: Math.round(currentY + petRect.y),
+      width: Math.round(petRect.width),
+      height: Math.round(petRect.height)
+    });
+    const minX = workArea.x + PET_WINDOW_EDGE_MARGIN_PX - petRect.x;
+    const maxX = Math.max(
+      minX,
+      workArea.x + workArea.width - PET_WINDOW_EDGE_MARGIN_PX - (petRect.x + petRect.width)
+    );
     let nextX = currentX + this.walkingDirection * settings.walkingSpeedPx * elapsedSeconds;
 
     if (nextX >= maxX) {
