@@ -321,7 +321,6 @@ function buildRendererHtml(): string {
         background-repeat: no-repeat;
         background-size: ${PET_ATLAS.width * renderScale}px ${PET_ATLAS.height * renderScale}px;
         cursor: grab;
-        filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.22));
         --pet-lift-y: 0px;
         --pet-facing-scale-x: 1;
         transform: translateY(var(--pet-lift-y)) scaleX(var(--pet-facing-scale-x));
