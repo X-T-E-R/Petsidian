@@ -14,6 +14,16 @@ GitHub：<https://github.com/X-T-E-R/Petsidian>
 
 通过 Obsidian 社区插件审核后，可以在 **Settings → Community plugins → Browse** 中搜索 `Petsidian` 安装。
 
+通过 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 体验 beta 版或社区插件上架前版本：
+
+1. 在 **Settings → Community plugins → Browse** 中安装并启用 **Obsidian42 - BRAT**。
+2. 打开 BRAT 设置并点击 **Add Beta Plugin**，或在命令面板运行 **BRAT: Add a beta plugin for testing**。
+3. 输入 `X-T-E-R/Petsidian` 或 `https://github.com/X-T-E-R/Petsidian`。
+4. BRAT 安装完成后，从同一个 GitHub Release 下载 `desktop-pet-preload.js`，并把它放到 `VaultFolder/.obsidian/plugins/petsidian/`，与 BRAT 安装出来的文件放在一起。
+5. 进入 **Settings → Community plugins**，必要时刷新插件列表，然后启用 **Petsidian**。
+
+BRAT 可以从 GitHub Release 安装和更新 beta 插件，但它文档里说明的插件安装流程只会下载 `manifest.json`、`main.js` 和可选的 `styles.css`。Petsidian 还依赖独立窗口使用的 `desktop-pet-preload.js`，所以只靠 BRAT 目前还不够。如果 BRAT 把 Petsidian 更新到新版本，也要把同一版 Release 里的 `desktop-pet-preload.js` 一并替换。若想要最稳妥的 beta 安装方式，请直接使用下面完整的 GitHub Releases 手动安装。
+
 从 GitHub Releases 手动安装：
 
 1. 下载 `main.js`、`desktop-pet-preload.js`、`manifest.json` 和 `styles.css`。
@@ -77,6 +87,8 @@ pnpm typecheck
 pnpm build
 git diff --check
 ```
+
+GitHub Actions 会在分支 push 和 pull request 中运行这些默认检查。
 
 可选运行时检查：
 

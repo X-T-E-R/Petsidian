@@ -14,6 +14,16 @@ GitHub: <https://github.com/X-T-E-R/Petsidian>
 
 After Petsidian is approved for the Obsidian Community directory, install it from **Settings → Community plugins → Browse**.
 
+To try the beta or pre-community version with [BRAT](https://github.com/TfTHacker/obsidian42-brat):
+
+1. Install and enable **Obsidian42 - BRAT** from **Settings → Community plugins → Browse**.
+2. Open BRAT's settings and choose **Add Beta Plugin**, or run **BRAT: Add a beta plugin for testing** from the command palette.
+3. Enter `X-T-E-R/Petsidian` or `https://github.com/X-T-E-R/Petsidian`.
+4. After BRAT finishes, download `desktop-pet-preload.js` from the same GitHub release and place it in `VaultFolder/.obsidian/plugins/petsidian/` next to BRAT's installed files.
+5. Go to **Settings → Community plugins**, refresh the plugin list if needed, and enable **Petsidian**.
+
+BRAT can install and update beta plugins from GitHub releases, but its documented plugin install flow downloads `manifest.json`, `main.js`, and optional `styles.css`. Petsidian also requires `desktop-pet-preload.js` for the detached window, so a BRAT-only install is not enough right now. If BRAT updates Petsidian to a newer release, replace `desktop-pet-preload.js` with the file from that same release as well. For the most reliable beta install, use the full manual GitHub Releases method below.
+
 To install manually from GitHub Releases:
 
 1. Download `main.js`, `desktop-pet-preload.js`, `manifest.json`, and `styles.css`.
@@ -77,6 +87,8 @@ pnpm typecheck
 pnpm build
 git diff --check
 ```
+
+GitHub Actions runs these default checks on branch pushes and pull requests.
 
 Optional runtime checks:
 

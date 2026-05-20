@@ -322,18 +322,21 @@ function buildRendererHtml(): string {
         background-size: ${PET_ATLAS.width * renderScale}px ${PET_ATLAS.height * renderScale}px;
         cursor: grab;
         filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.22));
+        --pet-lift-y: 0px;
+        --pet-facing-scale-x: 1;
+        transform: translateY(var(--pet-lift-y)) scaleX(var(--pet-facing-scale-x));
         transition: transform 160ms ease;
         pointer-events: auto;
       }
 
       #pet:hover, #pet:focus-visible {
         outline: none;
-        transform: translateY(-2px);
+        --pet-lift-y: -2px;
       }
 
       #pet.dragging {
         cursor: grabbing;
-        transform: translateY(0);
+        --pet-lift-y: 0px;
       }
 
       #context-menu {
@@ -590,14 +593,16 @@ function buildRendererHtml(): string {
           }
 
           maybeTriggerIdleAction(now);
-          const animationId =
-            state.settings.autonomousWalking && !state.settings.reducedMotion && activeAnimationId === "idle"
-              ? (walkingDirection > 0 ? "running-right" : "running-left")
-              : activeAnimationId;
+          const walkingAnimationActive =
+            state.settings.autonomousWalking &&
+            !state.settings.reducedMotion &&
+            activeAnimationId === "idle";
+          const animationId = walkingAnimationActive ? "running-right" : activeAnimationId;
           const animation = getAnimation(animationId);
           const elapsedMs = state.settings.reducedMotion ? 0 : now - animationStartedAtMs;
           const frame = state.settings.reducedMotion ? 0 : getFrameAtTime(animation, elapsedMs);
           const offset = getFrameOffset(animation, frame);
+          petButton.style.setProperty("--pet-facing-scale-x", walkingAnimationActive && walkingDirection < 0 ? "-1" : "1");
           petButton.style.backgroundPosition = offset.x + "px " + offset.y + "px";
           window.requestAnimationFrame(renderFrame);
         }
