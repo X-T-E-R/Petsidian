@@ -5,6 +5,10 @@ import { NativeObsidianEventController } from "./integration/obsidian-events";
 import { handlePetsidianProtocolRequest } from "./integration/protocol-handler";
 import { createPetsidianApiV1, type PetsidianApiV1 } from "./integration/public-api";
 import {
+  DESKTOP_PET_PRELOAD_SHA256,
+  DESKTOP_PET_PRELOAD_SOURCE
+} from "./generated/desktop-pet-preload-source";
+import {
   type PetActionAnimationId
 } from "./pet/animation";
 import { PET_CATALOG, type ImportedPetRecord } from "./pet/catalog";
@@ -36,12 +40,30 @@ type FileSystemAdapterLike = {
 };
 
 type NodePathLike = {
+  dirname: (pathValue: string) => string;
   resolve: (...parts: readonly string[]) => string;
+};
+
+type NodeFsPromisesLike = {
+  mkdir: (pathValue: string, options?: { recursive?: boolean }) => Promise<unknown>;
+  readFile: (pathValue: string, encoding: "utf8") => Promise<string>;
+  writeFile: (pathValue: string, data: string, encoding: "utf8") => Promise<void>;
+};
+
+type NodeCryptoLike = {
+  createHash: (algorithm: "sha256") => {
+    update: (data: string) => {
+      digest: (encoding: "hex") => string;
+    };
+  };
 };
 
 const IMPORTED_PETS_DIRNAME = "imported-pets";
 const IMPORTED_PET_METADATA_FILENAME = "metadata.json";
 const IMPORTED_PET_SPRITESHEET_FILENAME = "spritesheet.webp";
+const GENERATED_RUNTIME_DIRNAME = "generated";
+const PRELOAD_RUNTIME_DIRNAME = "runtime";
+const DESKTOP_PET_PRELOAD_FILENAME = "desktop-pet-preload.js";
 
 function normalizeStoragePath(pathValue: string): string {
   return pathValue.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/g, "");
@@ -104,6 +126,7 @@ export default class PetsidianPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.refreshPublicApiExposure();
+    const preloadScriptPath = await this.prepareDesktopPetPreloadScript();
 
     this.desktopPetWindow = new DesktopPetWindow({
       getSettings: () => this.settings,
@@ -112,7 +135,7 @@ export default class PetsidianPlugin extends Plugin {
       onUpdateSettings: async (partial) => {
         await this.updateSettings(partial);
       },
-      preloadScriptPath: this.getDesktopPetPreloadScriptPath()
+      preloadScriptPath
     });
 
     this.addRibbonIcon("paw-print", "Toggle Petsidian pet", () => {
@@ -385,6 +408,48 @@ export default class PetsidianPlugin extends Plugin {
     return joinStoragePath(this.getPluginDataDir(), IMPORTED_PETS_DIRNAME);
   }
 
+  private async prepareDesktopPetPreloadScript(): Promise<string | null> {
+    const preloadScriptPath = this.getDesktopPetPreloadScriptPath();
+    if (preloadScriptPath === null) {
+      return null;
+    }
+
+    try {
+      const runtimeRequire = resolveRuntimeRequire();
+      const nodeFs = runtimeRequire("node:fs/promises") as NodeFsPromisesLike;
+      const nodePath = runtimeRequire("node:path") as NodePathLike;
+      await nodeFs.mkdir(nodePath.dirname(preloadScriptPath), { recursive: true });
+
+      let existingHash: string | null = null;
+      try {
+        const existingSource = await nodeFs.readFile(preloadScriptPath, "utf8");
+        existingHash = this.hashDesktopPetPreloadSource(existingSource);
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") {
+          throw error;
+        }
+      }
+
+      if (existingHash !== DESKTOP_PET_PRELOAD_SHA256) {
+        await nodeFs.writeFile(preloadScriptPath, DESKTOP_PET_PRELOAD_SOURCE, "utf8");
+      }
+
+      return preloadScriptPath;
+    } catch (error) {
+      console.error(
+        "Petsidian failed to prepare the generated desktop pet preload bridge. Smooth native drag will fall back to host polling.",
+        error
+      );
+      return null;
+    }
+  }
+
+  private hashDesktopPetPreloadSource(source: string): string {
+    const runtimeRequire = resolveRuntimeRequire();
+    const nodeCrypto = runtimeRequire("node:crypto") as NodeCryptoLike;
+    return nodeCrypto.createHash("sha256").update(source).digest("hex");
+  }
+
   private getDesktopPetPreloadScriptPath(): string | null {
     if (!isFileSystemAdapterLike(this.app.vault.adapter)) {
       return null;
@@ -397,7 +462,9 @@ export default class PetsidianPlugin extends Plugin {
       return nodePath.resolve(
         this.app.vault.adapter.getBasePath(),
         pluginDir,
-        "desktop-pet-preload.js"
+        GENERATED_RUNTIME_DIRNAME,
+        PRELOAD_RUNTIME_DIRNAME,
+        DESKTOP_PET_PRELOAD_FILENAME
       );
     } catch {
       return null;

@@ -19,6 +19,7 @@ Use this before publishing any GitHub release or submitting an update to the Obs
 - [ ] Website import still requires HTTPS and rejects localhost/private-network targets.
 - [ ] Language switching updates both the settings tab and an already-open detached pet window.
 - [ ] The detached pet still respects tight pointer bounds, right-click menu behavior, and host-window shutdown cleanup.
+- [ ] The detached-window runtime preload is generated from `main.js` before the pet window opens; no standalone preload release asset is required.
 - [ ] Core command palette entries stay limited to the small daily-use set.
 
 ## Default checks
@@ -38,7 +39,7 @@ Use this before publishing any GitHub release or submitting an update to the Obs
 
 - [ ] Commit the release-ready root files before tagging.
 - [ ] Create or push a tag that exactly matches `manifest.json.version` (for example `0.1.0`, not `v0.1.0`).
-- [ ] Confirm the GitHub Actions release workflow attached `main.js`, `desktop-pet-preload.js`, `manifest.json`, `styles.css`, and the manual-install zip.
+- [ ] Confirm the GitHub Actions release workflow attached `main.js`, `manifest.json`, `styles.css`, and the manual-install zip.
 - [ ] Spot-check the manual-install zip by extracting it into `.obsidian/plugins/petsidian/`.
 - [ ] If this is the first Community submission, sign into `community.obsidian.md`, connect GitHub, and submit the repository from the dashboard.
 - [ ] If this is an update, verify the Community dashboard shows the new release as healthy after automated review.

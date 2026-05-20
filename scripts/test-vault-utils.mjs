@@ -21,9 +21,9 @@ export const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 export const pluginId = String(manifest.id);
 export const requiredDistFiles = [
   resolve(distDir, "main.js"),
-  resolve(distDir, "desktop-pet-preload.js"),
   resolve(distDir, "manifest.json"),
-  resolve(distDir, "styles.css")
+  resolve(distDir, "styles.css"),
+  resolve(distDir, "versions.json")
 ];
 export const testVaultPath = "C:\\Users\\xxoy1\\OneDrive\\Obsidian\\testVault\\测试仓库";
 export const testVaultName = basename(testVaultPath);

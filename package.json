@@ -8,6 +8,8 @@
   "scripts": {
     "dev": "node esbuild.config.mjs --watch",
     "build": "pnpm typecheck && node esbuild.config.mjs production",
+    "generate:preload": "node esbuild.config.mjs --generate-preload-source",
+    "pretypecheck": "pnpm generate:preload",
     "typecheck": "tsc --noEmit",
     "link:test-vault": "node scripts/link-test-vault.mjs",
     "enable:test-vault-plugin": "node scripts/enable-test-vault-plugin.mjs",

@@ -19,14 +19,13 @@ To try the beta or pre-community version with [BRAT](https://github.com/TfTHacke
 1. Install and enable **Obsidian42 - BRAT** from **Settings → Community plugins → Browse**.
 2. Open BRAT's settings and choose **Add Beta Plugin**, or run **BRAT: Add a beta plugin for testing** from the command palette.
 3. Enter `X-T-E-R/Petsidian` or `https://github.com/X-T-E-R/Petsidian`.
-4. After BRAT finishes, download `desktop-pet-preload.js` from the same GitHub release and place it in `VaultFolder/.obsidian/plugins/petsidian/` next to BRAT's installed files.
-5. Go to **Settings → Community plugins**, refresh the plugin list if needed, and enable **Petsidian**.
+4. Go to **Settings → Community plugins**, refresh the plugin list if needed, and enable **Petsidian**.
 
-BRAT can install and update beta plugins from GitHub releases, but its documented plugin install flow downloads `manifest.json`, `main.js`, and optional `styles.css`. Petsidian also requires `desktop-pet-preload.js` for the detached window, so a BRAT-only install is not enough right now. If BRAT updates Petsidian to a newer release, replace `desktop-pet-preload.js` with the file from that same release as well. For the most reliable beta install, use the full manual GitHub Releases method below.
+BRAT installs the standard Obsidian plugin assets from GitHub releases: `manifest.json`, `main.js`, and optional `styles.css`. Petsidian packages the detached-window preload bridge inside `main.js` and writes the runtime preload file inside its plugin folder when it starts, so there is no extra preload file to download.
 
 To install manually from GitHub Releases:
 
-1. Download `main.js`, `desktop-pet-preload.js`, `manifest.json`, and `styles.css`.
+1. Download `main.js`, `manifest.json`, and `styles.css`.
 2. Put them in `VaultFolder/.obsidian/plugins/petsidian/`.
 3. Reload Obsidian desktop and enable Petsidian.
 
@@ -108,7 +107,7 @@ pnpm build
 
 Before publishing, run through [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md).
 
-Release tags must exactly match `manifest.json.version`, for example `0.1.0` rather than `v0.1.0`. The GitHub Actions workflow uploads `main.js`, `desktop-pet-preload.js`, `manifest.json`, `styles.css`, `versions.json`, and a manual install zip.
+Release tags must exactly match `manifest.json.version`, for example `0.1.0` rather than `v0.1.0`. The GitHub Actions workflow uploads `main.js`, `manifest.json`, `styles.css`, `versions.json`, and a manual install zip.
 
 ## Safety And Rights
 

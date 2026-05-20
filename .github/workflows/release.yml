@@ -78,14 +78,12 @@ jobs:
           rm -rf release
           mkdir -p release/manual/petsidian
           cp dist/main.js release/main.js
-          cp dist/desktop-pet-preload.js release/desktop-pet-preload.js
           cp dist/manifest.json release/manifest.json
           if [ -f dist/styles.css ]; then cp dist/styles.css release/styles.css; fi
           if [ -f dist/versions.json ]; then cp dist/versions.json release/versions.json; fi
           cp LICENSE release/manual/petsidian/LICENSE
           cp README.md release/manual/petsidian/README.md
           cp release/main.js release/manual/petsidian/main.js
-          cp release/desktop-pet-preload.js release/manual/petsidian/desktop-pet-preload.js
           cp release/manifest.json release/manual/petsidian/manifest.json
           if [ -f release/styles.css ]; then cp release/styles.css release/manual/petsidian/styles.css; fi
           if [ -f release/versions.json ]; then cp release/versions.json release/manual/petsidian/versions.json; fi
@@ -99,7 +97,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             release/main.js
-            release/desktop-pet-preload.js
             release/manifest.json
             release/styles.css
             release/versions.json

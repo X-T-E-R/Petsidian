@@ -19,14 +19,13 @@ GitHub：<https://github.com/X-T-E-R/Petsidian>
 1. 在 **Settings → Community plugins → Browse** 中安装并启用 **Obsidian42 - BRAT**。
 2. 打开 BRAT 设置并点击 **Add Beta Plugin**，或在命令面板运行 **BRAT: Add a beta plugin for testing**。
 3. 输入 `X-T-E-R/Petsidian` 或 `https://github.com/X-T-E-R/Petsidian`。
-4. BRAT 安装完成后，从同一个 GitHub Release 下载 `desktop-pet-preload.js`，并把它放到 `VaultFolder/.obsidian/plugins/petsidian/`，与 BRAT 安装出来的文件放在一起。
-5. 进入 **Settings → Community plugins**，必要时刷新插件列表，然后启用 **Petsidian**。
+4. 进入 **Settings → Community plugins**，必要时刷新插件列表，然后启用 **Petsidian**。
 
-BRAT 可以从 GitHub Release 安装和更新 beta 插件，但它文档里说明的插件安装流程只会下载 `manifest.json`、`main.js` 和可选的 `styles.css`。Petsidian 还依赖独立窗口使用的 `desktop-pet-preload.js`，所以只靠 BRAT 目前还不够。如果 BRAT 把 Petsidian 更新到新版本，也要把同一版 Release 里的 `desktop-pet-preload.js` 一并替换。若想要最稳妥的 beta 安装方式，请直接使用下面完整的 GitHub Releases 手动安装。
+BRAT 会从 GitHub Release 安装标准 Obsidian 插件资产：`manifest.json`、`main.js` 和可选的 `styles.css`。Petsidian 已经把独立窗口的 preload 桥接代码打包进 `main.js`，插件启动时会在自己的插件目录里写出运行时 preload 文件，因此不需要额外下载 preload 文件。
 
 从 GitHub Releases 手动安装：
 
-1. 下载 `main.js`、`desktop-pet-preload.js`、`manifest.json` 和 `styles.css`。
+1. 下载 `main.js`、`manifest.json` 和 `styles.css`。
 2. 放入 `VaultFolder/.obsidian/plugins/petsidian/`。
 3. 重载 Obsidian 桌面端并启用 Petsidian。
 
@@ -108,7 +107,7 @@ pnpm build
 
 发布前按 [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) 检查。
 
-Release tag 必须与 `manifest.json.version` 完全一致，例如 `0.1.0`，不要用 `v0.1.0`。GitHub Actions 会上传 `main.js`、`desktop-pet-preload.js`、`manifest.json`、`styles.css`、`versions.json` 和手动安装 zip。
+Release tag 必须与 `manifest.json.version` 完全一致，例如 `0.1.0`，不要用 `v0.1.0`。GitHub Actions 会上传 `main.js`、`manifest.json`、`styles.css`、`versions.json` 和手动安装 zip。
 
 ## 安全与权利提醒
 
